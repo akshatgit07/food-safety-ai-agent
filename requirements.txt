@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+langgraph
+langchain
+openai
+chromadb
+sqlalchemy
+psycopg2-binary
+streamlit
+python-dotenv
+loguru
+requests
+pydantic
