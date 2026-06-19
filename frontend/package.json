@@ -1,1 +1,1 @@
-{"name":"food-safety-frontend","private":true,"scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"latest","react":"latest","react-dom":"latest"}}
+{"name":"food-safety-frontend","private":true,"scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"latest","react":"latest","react-dom":"latest"},"devDependencies":{"typescript":"latest","@types/react":"latest","@types/node":"latest"}}
