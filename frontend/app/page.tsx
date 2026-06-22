@@ -1,574 +1,356 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 
-type HealthResponse = {
-  status?: string;
-  project?: string;
-  healthy?: boolean;
+type Message = { role: 'user' | 'assistant'; text: string };
+type Meal = {
+  name?: string;
+  ingredients?: Array<string | { name?: string }>;
+  estimated_calories?: number;
+  estimated_protein_g?: number;
+  nutrition_source?: string;
+  grounded_ingredient_ratio?: string;
 };
-
-type ChatApiResponse = {
-  response: string;
+type DayPlan = { day?: number | string; meals?: Meal[] };
+type MealPlan = {
+  summary?: string;
+  notes?: string | string[];
+  days?: DayPlan[];
+  nutrition_grounding?: {
+    source?: string;
+    grounded_ingredients?: number;
+    total_ingredients?: number;
+  };
 };
-
-type Message = {
-  role: 'user' | 'assistant';
-  text: string;
-};
-
-type MealPlanRequest = {
-  days: number;
-  goal: string;
-  diet: string;
-  calorie_target?: number;
-  meals_per_day: number;
+type ShoppingList = {
+  servings?: number;
+  categories?: Record<string, Array<string | { name?: string; quantity?: string }>>;
+  notes?: string | string[];
 };
 
 export default function Home() {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [healthError, setHealthError] = useState<string | null>(null);
-
+  const [connected, setConnected] = useState(false);
+  const [statusText, setStatusText] = useState('Checking Render backend...');
   const [messages, setMessages] = useState<Message[]>([
-    {
-      role: 'assistant',
-      text: 'Hi — ask me about meals, ingredients, nutrition, or food choices and I’ll answer using the Render backend.',
-    },
+    { role: 'assistant', text: 'Ask me about food choices, nutrition, or meal planning.' },
   ]);
   const [input, setInput] = useState('Is Greek yogurt healthy after a workout?');
   const [isSending, setIsSending] = useState(false);
-  const [chatError, setChatError] = useState<string | null>(null);
-
-  const [mealPlanForm, setMealPlanForm] = useState<MealPlanRequest>({
+  const [mealPlan, setMealPlan] = useState<MealPlan | null>(null);
+  const [shoppingList, setShoppingList] = useState<ShoppingList | null>(null);
+  const [loadingPlan, setLoadingPlan] = useState(false);
+  const [loadingList, setLoadingList] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState({
     days: 5,
     goal: 'muscle gain',
     diet: 'vegetarian',
     calorie_target: 2400,
     meals_per_day: 3,
   });
-  const [mealPlanResult, setMealPlanResult] = useState<any>(null);
-  const [mealPlanLoading, setMealPlanLoading] = useState(false);
-  const [mealPlanError, setMealPlanError] = useState<string | null>(null);
-
-  const [shoppingListResult, setShoppingListResult] = useState<any>(null);
-  const [shoppingListLoading, setShoppingListLoading] = useState(false);
-  const [shoppingListError, setShoppingListError] = useState<string | null>(null);
 
   useEffect(() => {
-    async function checkBackend() {
+    async function checkHealth() {
       if (!apiUrl) {
-        setHealthError('NEXT_PUBLIC_API_URL is not configured in Vercel.');
+        setStatusText('NEXT_PUBLIC_API_URL is not configured in Vercel.');
         return;
       }
-
       try {
         const response = await fetch(`${apiUrl}/health`);
-        if (!response.ok) {
-          throw new Error(`Backend returned ${response.status}`);
-        }
-        setHealth(await response.json());
-      } catch (err) {
-        setHealthError(err instanceof Error ? err.message : 'Unable to reach backend');
+        if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+        setConnected(true);
+        setStatusText('Connected to FastAPI on Render.');
+      } catch (healthError) {
+        setStatusText(healthError instanceof Error ? healthError.message : 'Unable to reach backend');
       }
     }
-
-    checkBackend();
+    checkHealth();
   }, [apiUrl]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  const groundingLabel = useMemo(() => {
+    const grounding = mealPlan?.nutrition_grounding;
+    if (!grounding) return null;
+    const grounded = grounding.grounded_ingredients ?? 0;
+    const total = grounding.total_ingredients ?? 0;
+    return `${grounded}/${total} ingredients grounded • ${grounding.source ?? 'nutrition data'}`;
+  }, [mealPlan]);
+
+  async function submitChat(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const trimmed = input.trim();
-    if (!trimmed || isSending) return;
-
-    if (!apiUrl) {
-      setChatError('NEXT_PUBLIC_API_URL is not configured in Vercel.');
-      return;
-    }
-
-    setChatError(null);
-    setMessages((current) => [...current, { role: 'user', text: trimmed }]);
+    if (!apiUrl || !input.trim() || isSending) return;
+    const question = input.trim();
+    setMessages((current) => [...current, { role: 'user', text: question }]);
     setInput('');
     setIsSending(true);
-
+    setError(null);
     try {
       const response = await fetch(`${apiUrl}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify({ message: question }),
       });
-
       const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.detail || `Backend returned ${response.status}`);
-      }
-
-      const data = payload as ChatApiResponse;
-      setMessages((current) => [...current, { role: 'assistant', text: data.response }]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to reach backend';
-      setChatError(message);
-      setMessages((current) => [
-        ...current,
-        {
-          role: 'assistant',
-          text: `I hit an error while calling the backend: ${message}`,
-        },
-      ]);
+      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      setMessages((current) => [...current, { role: 'assistant', text: payload.response }]);
+    } catch (chatError) {
+      const message = chatError instanceof Error ? chatError.message : 'Unable to call chat endpoint';
+      setError(message);
+      setMessages((current) => [...current, { role: 'assistant', text: `Error: ${message}` }]);
     } finally {
       setIsSending(false);
     }
   }
 
-  async function handleGenerateMealPlan() {
-    if (!apiUrl || mealPlanLoading) return;
-
-    setMealPlanLoading(true);
-    setMealPlanError(null);
-    setShoppingListResult(null);
-    setShoppingListError(null);
-
+  async function generateMealPlan() {
+    if (!apiUrl || loadingPlan) return;
+    setLoadingPlan(true);
+    setError(null);
+    setShoppingList(null);
     try {
       const response = await fetch(`${apiUrl}/meal-plan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(mealPlanForm),
+        body: JSON.stringify(form),
       });
-
       const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.detail || `Backend returned ${response.status}`);
-      }
-
-      setMealPlanResult(payload);
-    } catch (err) {
-      setMealPlanError(err instanceof Error ? err.message : 'Unable to generate meal plan');
+      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      setMealPlan(payload);
+    } catch (planError) {
+      setError(planError instanceof Error ? planError.message : 'Unable to generate meal plan');
     } finally {
-      setMealPlanLoading(false);
+      setLoadingPlan(false);
     }
   }
 
-  async function handleGenerateShoppingList() {
-    if (!apiUrl || shoppingListLoading || !mealPlanResult) return;
-
-    setShoppingListLoading(true);
-    setShoppingListError(null);
-
+  async function generateShoppingList() {
+    if (!apiUrl || !mealPlan || loadingList) return;
+    setLoadingList(true);
+    setError(null);
     try {
       const response = await fetch(`${apiUrl}/shopping-list`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ meal_plan: mealPlanResult, servings: 1 }),
+        body: JSON.stringify({ meal_plan: mealPlan, servings: 1 }),
       });
-
       const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.detail || `Backend returned ${response.status}`);
-      }
-
-      setShoppingListResult(payload);
-    } catch (err) {
-      setShoppingListError(err instanceof Error ? err.message : 'Unable to generate shopping list');
+      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      setShoppingList(payload);
+    } catch (listError) {
+      setError(listError instanceof Error ? listError.message : 'Unable to generate shopping list');
     } finally {
-      setShoppingListLoading(false);
+      setLoadingList(false);
     }
   }
 
+  async function copyShoppingList() {
+    if (!shoppingList) return;
+    const text = Object.entries(shoppingList.categories ?? {})
+      .map(([category, items]) => {
+        const rows = items.map((item) => {
+          if (typeof item === 'string') return `- ${item}`;
+          return `- ${item.name ?? 'Item'}${item.quantity ? ` — ${item.quantity}` : ''}`;
+        });
+        return `${titleCase(category)}\n${rows.join('\n')}`;
+      })
+      .join('\n\n');
+    await navigator.clipboard.writeText(text);
+  }
+
   return (
-    <main style={styles.pageShell}>
-      <section style={styles.heroCard}>
-        <p style={styles.eyebrow}>Guiltless AI Prototype</p>
-        <h1 style={styles.heading}>Food Safety AI Agent</h1>
-        <p style={styles.subtitle}>
-          A nutrition assistant for meal planning, food recommendations,
-          shopping lists, and product intelligence.
-        </p>
-
-        <div style={styles.statusCard}>
-          <span
-            style={{
-              ...styles.statusDot,
-              backgroundColor: health ? '#22c55e' : healthError ? '#ef4444' : '#f59e0b',
-            }}
-          />
+    <main style={styles.page}>
+      <section style={styles.shell}>
+        <header style={styles.header}>
           <div>
-            <strong>Backend status</strong>
-            <p style={styles.statusText}>
-              {health
-                ? 'Connected to the FastAPI service on Render.'
-                : healthError
-                  ? healthError
-                  : 'Checking Render backend...'}
-            </p>
+            <p style={styles.eyebrow}>Guiltless AI Prototype</p>
+            <h1 style={styles.h1}>Nutrition Copilot</h1>
+            <p style={styles.subtitle}>Chat, generate meal plans, ground nutrition with USDA data, and build grocery lists.</p>
           </div>
-        </div>
+          <div style={styles.statusPill}>
+            <span style={{ ...styles.dot, background: connected ? '#22c55e' : '#f59e0b' }} />
+            {statusText}
+          </div>
+        </header>
 
-        <div style={styles.grid}>
-          <div style={styles.column}>
-            <div style={styles.chatShell}>
-              <div style={styles.chatHeader}>
-                <h2 style={styles.sectionTitle}>Nutrition Chat</h2>
-                <p style={styles.sectionSubtitle}>Ask a food or meal question and hit the live /chat endpoint.</p>
+        {error && <div style={styles.error}>{error}</div>}
+
+        <section style={styles.grid}>
+          <div style={styles.card}>
+            <div style={styles.cardHeader}>
+              <div>
+                <h2 style={styles.h2}>Nutrition Chat</h2>
+                <p style={styles.muted}>Ask about ingredients, meals, or food choices.</p>
               </div>
+            </div>
+            <div style={styles.messages}>
+              {messages.map((message, index) => (
+                <div key={`${message.role}-${index}`} style={{
+                  ...styles.bubble,
+                  alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start',
+                  background: message.role === 'user' ? '#111827' : '#f3f4f6',
+                  color: message.role === 'user' ? '#fff' : '#111827',
+                }}>
+                  <strong style={styles.role}>{message.role === 'user' ? 'You' : 'Assistant'}</strong>
+                  <p style={styles.messageText}>{message.text}</p>
+                </div>
+              ))}
+              {isSending && <p style={styles.loading}>Thinking…</p>}
+            </div>
+            <form onSubmit={submitChat} style={styles.chatForm}>
+              <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={4} style={styles.textarea} />
+              <button style={styles.primaryButton} disabled={isSending}>Send question</button>
+            </form>
+          </div>
 
-              <div style={styles.messagesPanel}>
-                {messages.map((message, index) => (
-                  <div
-                    key={`${message.role}-${index}`}
-                    style={{
-                      ...styles.messageBubble,
-                      alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start',
-                      backgroundColor: message.role === 'user' ? '#111827' : '#f3f4f6',
-                      color: message.role === 'user' ? '#ffffff' : '#111827',
-                    }}
-                  >
-                    <strong style={styles.messageRole}>{message.role === 'user' ? 'You' : 'Assistant'}</strong>
-                    <p style={styles.messageText}>{message.text}</p>
+          <div style={styles.stack}>
+            <div style={styles.card}>
+              <div style={styles.cardHeader}>
+                <div>
+                  <h2 style={styles.h2}>Meal Plan Generator</h2>
+                  <p style={styles.muted}>Create a personalized plan and enrich it with nutrition data.</p>
+                </div>
+              </div>
+              <div style={styles.formGrid}>
+                <label style={styles.label}>Goal<input style={styles.input} value={form.goal} onChange={(e) => setForm({ ...form, goal: e.target.value })} /></label>
+                <label style={styles.label}>Diet<input style={styles.input} value={form.diet} onChange={(e) => setForm({ ...form, diet: e.target.value })} /></label>
+                <label style={styles.label}>Days<input style={styles.input} type="number" min={1} max={7} value={form.days} onChange={(e) => setForm({ ...form, days: Number(e.target.value) })} /></label>
+                <label style={styles.label}>Meals / day<input style={styles.input} type="number" min={1} max={6} value={form.meals_per_day} onChange={(e) => setForm({ ...form, meals_per_day: Number(e.target.value) })} /></label>
+                <label style={styles.label}>Calories<input style={styles.input} type="number" value={form.calorie_target} onChange={(e) => setForm({ ...form, calorie_target: Number(e.target.value) })} /></label>
+              </div>
+              <div style={styles.actions}>
+                <button onClick={generateMealPlan} style={styles.primaryButton} disabled={loadingPlan}>{loadingPlan ? 'Generating…' : 'Generate meal plan'}</button>
+                <button onClick={generateShoppingList} style={styles.secondaryButton} disabled={!mealPlan || loadingList}>{loadingList ? 'Building…' : 'Build shopping list'}</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {mealPlan && (
+          <section style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.h2}>Your Meal Plan</h2>
+                <p style={styles.muted}>{mealPlan.summary ?? 'Personalized meal plan'}</p>
+              </div>
+              {groundingLabel && <span style={styles.badge}>USDA-aware • {groundingLabel}</span>}
+            </div>
+            <div style={styles.dayGrid}>
+              {(mealPlan.days ?? []).map((day, dayIndex) => (
+                <article key={dayIndex} style={styles.dayCard}>
+                  <h3 style={styles.dayTitle}>Day {day.day ?? dayIndex + 1}</h3>
+                  <div style={styles.mealStack}>
+                    {(day.meals ?? []).map((meal, mealIndex) => (
+                      <div key={mealIndex} style={styles.mealCard}>
+                        <div style={styles.mealTopRow}>
+                          <strong style={styles.mealName}>{meal.name ?? `Meal ${mealIndex + 1}`}</strong>
+                          <span style={meal.nutrition_source?.toLowerCase().includes('usda') ? styles.usdaBadge : styles.estimateBadge}>
+                            {meal.nutrition_source ?? 'model estimate'}
+                          </span>
+                        </div>
+                        <div style={styles.metrics}>
+                          <span>🔥 {meal.estimated_calories ?? '—'} kcal</span>
+                          <span>💪 {meal.estimated_protein_g ?? '—'} g protein</span>
+                          {meal.grounded_ingredient_ratio && <span>✓ {meal.grounded_ingredient_ratio} grounded</span>}
+                        </div>
+                        <div style={styles.chips}>
+                          {(meal.ingredients ?? []).map((ingredient, ingredientIndex) => {
+                            const label = typeof ingredient === 'string' ? ingredient : ingredient.name ?? 'Ingredient';
+                            return <span key={ingredientIndex} style={styles.chip}>{label}</span>;
+                          })}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-                {isSending && <p style={styles.loadingText}>Thinking…</p>}
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {shoppingList && (
+          <section style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.h2}>Shopping List</h2>
+                <p style={styles.muted}>Grouped by grocery category for {shoppingList.servings ?? 1} serving(s).</p>
               </div>
-
-              <form onSubmit={handleSubmit} style={styles.form}>
-                <textarea
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  placeholder="Ask about a meal, ingredient, diet goal, or grocery choice..."
-                  rows={4}
-                  style={styles.textarea}
-                />
-                <div style={styles.formFooter}>
-                  <span style={styles.helperText}>Backend route: POST /chat</span>
-                  <button type="submit" disabled={isSending} style={styles.button}>
-                    {isSending ? 'Sending…' : 'Send question'}
-                  </button>
-                </div>
-                {chatError && <p style={styles.errorText}>{chatError}</p>}
-              </form>
+              <button onClick={copyShoppingList} style={styles.secondaryButton}>Copy list</button>
             </div>
-          </div>
-
-          <div style={styles.column}>
-            <div style={styles.panel}>
-              <div style={styles.panelHeader}>
-                <h2 style={styles.sectionTitle}>Meal Plan Generator</h2>
-                <p style={styles.sectionSubtitle}>Generate a structured meal plan using the live /meal-plan endpoint.</p>
-              </div>
-
-              <div style={styles.formStack}>
-                <label style={styles.label}>
-                  Goal
-                  <input
-                    value={mealPlanForm.goal}
-                    onChange={(event) => setMealPlanForm((current) => ({ ...current, goal: event.target.value }))}
-                    style={styles.input}
-                  />
-                </label>
-                <label style={styles.label}>
-                  Diet
-                  <input
-                    value={mealPlanForm.diet}
-                    onChange={(event) => setMealPlanForm((current) => ({ ...current, diet: event.target.value }))}
-                    style={styles.input}
-                  />
-                </label>
-                <div style={styles.twoCol}>
-                  <label style={styles.label}>
-                    Days
-                    <input
-                      type="number"
-                      min={1}
-                      max={7}
-                      value={mealPlanForm.days}
-                      onChange={(event) => setMealPlanForm((current) => ({ ...current, days: Number(event.target.value) }))}
-                      style={styles.input}
-                    />
-                  </label>
-                  <label style={styles.label}>
-                    Meals / day
-                    <input
-                      type="number"
-                      min={1}
-                      max={6}
-                      value={mealPlanForm.meals_per_day}
-                      onChange={(event) => setMealPlanForm((current) => ({ ...current, meals_per_day: Number(event.target.value) }))}
-                      style={styles.input}
-                    />
-                  </label>
-                </div>
-                <label style={styles.label}>
-                  Calorie target
-                  <input
-                    type="number"
-                    value={mealPlanForm.calorie_target ?? ''}
-                    onChange={(event) => setMealPlanForm((current) => ({
-                      ...current,
-                      calorie_target: event.target.value ? Number(event.target.value) : undefined,
-                    }))}
-                    style={styles.input}
-                  />
-                </label>
-
-                <div style={styles.buttonRow}>
-                  <button onClick={handleGenerateMealPlan} disabled={mealPlanLoading} style={styles.button}>
-                    {mealPlanLoading ? 'Generating…' : 'Generate meal plan'}
-                  </button>
-                  <button
-                    onClick={handleGenerateShoppingList}
-                    disabled={!mealPlanResult || shoppingListLoading}
-                    style={{
-                      ...styles.button,
-                      background: mealPlanResult ? '#4f46e5' : '#94a3b8',
-                    }}
-                  >
-                    {shoppingListLoading ? 'Building…' : 'Build shopping list'}
-                  </button>
-                </div>
-                {mealPlanError && <p style={styles.errorText}>{mealPlanError}</p>}
-                {shoppingListError && <p style={styles.errorText}>{shoppingListError}</p>}
-              </div>
+            <div style={styles.shoppingGrid}>
+              {Object.entries(shoppingList.categories ?? {}).map(([category, items]) => (
+                <article key={category} style={styles.shoppingCard}>
+                  <h3 style={styles.categoryTitle}>{titleCase(category)}</h3>
+                  <div style={styles.checkList}>
+                    {items.map((item, index) => (
+                      <label key={index} style={styles.checkRow}>
+                        <input type="checkbox" />
+                        <span>{typeof item === 'string' ? item : item.name ?? 'Item'}</span>
+                        {typeof item !== 'string' && item.quantity && <small style={styles.quantity}>{item.quantity}</small>}
+                      </label>
+                    ))}
+                  </div>
+                </article>
+              ))}
             </div>
-
-            <div style={styles.outputPanel}>
-              <h3 style={styles.outputTitle}>Meal plan output</h3>
-              <pre style={styles.pre}>{mealPlanResult ? JSON.stringify(mealPlanResult, null, 2) : 'No meal plan generated yet.'}</pre>
-            </div>
-
-            <div style={styles.outputPanel}>
-              <h3 style={styles.outputTitle}>Shopping list output</h3>
-              <pre style={styles.pre}>{shoppingListResult ? JSON.stringify(shoppingListResult, null, 2) : 'Generate a meal plan first, then build a shopping list.'}</pre>
-            </div>
-          </div>
-        </div>
+          </section>
+        )}
       </section>
     </main>
   );
 }
 
+function titleCase(value: string) {
+  return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 const styles: Record<string, React.CSSProperties> = {
-  pageShell: {
-    minHeight: '100vh',
-    background: 'linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)',
-    padding: '40px 16px',
-    fontFamily: 'Inter, Arial, sans-serif',
-  },
-  heroCard: {
-    maxWidth: '1280px',
-    margin: '0 auto',
-    background: '#ffffff',
-    borderRadius: '24px',
-    padding: '32px',
-    boxShadow: '0 24px 60px rgba(15, 23, 42, 0.08)',
-    border: '1px solid #e5e7eb',
-  },
-  eyebrow: {
-    textTransform: 'uppercase',
-    letterSpacing: '0.12em',
-    fontSize: '12px',
-    color: '#6366f1',
-    fontWeight: 700,
-    marginBottom: '12px',
-  },
-  heading: {
-    fontSize: '40px',
-    lineHeight: 1.1,
-    margin: 0,
-    color: '#0f172a',
-  },
-  subtitle: {
-    fontSize: '18px',
-    lineHeight: 1.6,
-    color: '#475569',
-    marginTop: '16px',
-    marginBottom: '24px',
-    maxWidth: '720px',
-  },
-  statusCard: {
-    display: 'flex',
-    gap: '12px',
-    alignItems: 'flex-start',
-    background: '#f8fafc',
-    border: '1px solid #e5e7eb',
-    borderRadius: '16px',
-    padding: '16px',
-    marginBottom: '28px',
-  },
-  statusDot: {
-    width: '12px',
-    height: '12px',
-    borderRadius: '999px',
-    marginTop: '6px',
-    flexShrink: 0,
-  },
-  statusText: {
-    margin: '4px 0 0',
-    color: '#475569',
-  },
-  grid: {
-    display: 'grid',
-    gridTemplateColumns: '1.05fr 0.95fr',
-    gap: '24px',
-    alignItems: 'start',
-  },
-  column: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '24px',
-  },
-  chatShell: {
-    border: '1px solid #e5e7eb',
-    borderRadius: '20px',
-    overflow: 'hidden',
-    background: '#ffffff',
-  },
-  chatHeader: {
-    padding: '20px 24px',
-    borderBottom: '1px solid #e5e7eb',
-    background: '#fafafa',
-  },
-  panel: {
-    border: '1px solid #e5e7eb',
-    borderRadius: '20px',
-    background: '#ffffff',
-    overflow: 'hidden',
-  },
-  panelHeader: {
-    padding: '20px 24px',
-    borderBottom: '1px solid #e5e7eb',
-    background: '#fafafa',
-  },
-  sectionTitle: {
-    margin: 0,
-    fontSize: '22px',
-    color: '#0f172a',
-  },
-  sectionSubtitle: {
-    margin: '8px 0 0',
-    color: '#64748b',
-  },
-  messagesPanel: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '14px',
-    padding: '24px',
-    minHeight: '340px',
-    background: '#fcfcfd',
-  },
-  messageBubble: {
-    maxWidth: '80%',
-    padding: '14px 16px',
-    borderRadius: '18px',
-    boxShadow: '0 8px 20px rgba(15, 23, 42, 0.05)',
-  },
-  messageRole: {
-    display: 'block',
-    marginBottom: '6px',
-    fontSize: '12px',
-    letterSpacing: '0.08em',
-    textTransform: 'uppercase',
-  },
-  messageText: {
-    margin: 0,
-    whiteSpace: 'pre-wrap',
-    lineHeight: 1.6,
-  },
-  loadingText: {
-    margin: 0,
-    color: '#6366f1',
-    fontWeight: 600,
-  },
-  form: {
-    borderTop: '1px solid #e5e7eb',
-    padding: '20px 24px 24px',
-    background: '#ffffff',
-  },
-  textarea: {
-    width: '100%',
-    resize: 'vertical',
-    borderRadius: '16px',
-    border: '1px solid #cbd5e1',
-    padding: '14px 16px',
-    fontSize: '15px',
-    lineHeight: 1.5,
-    outline: 'none',
-    boxSizing: 'border-box',
-  },
-  formFooter: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: '12px',
-    marginTop: '14px',
-    flexWrap: 'wrap',
-  },
-  helperText: {
-    color: '#64748b',
-    fontSize: '14px',
-  },
-  button: {
-    background: '#111827',
-    color: '#ffffff',
-    border: 'none',
-    borderRadius: '999px',
-    padding: '12px 18px',
-    fontWeight: 700,
-    cursor: 'pointer',
-  },
-  buttonRow: {
-    display: 'flex',
-    gap: '12px',
-    flexWrap: 'wrap',
-  },
-  errorText: {
-    marginTop: '12px',
-    color: '#dc2626',
-    fontWeight: 600,
-  },
-  formStack: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '16px',
-    padding: '24px',
-  },
-  label: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-    color: '#334155',
-    fontWeight: 600,
-  },
-  input: {
-    borderRadius: '14px',
-    border: '1px solid #cbd5e1',
-    padding: '12px 14px',
-    fontSize: '15px',
-  },
-  twoCol: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '12px',
-  },
-  outputPanel: {
-    border: '1px solid #e5e7eb',
-    borderRadius: '20px',
-    padding: '20px',
-    background: '#ffffff',
-  },
-  outputTitle: {
-    marginTop: 0,
-    marginBottom: '12px',
-    color: '#0f172a',
-  },
-  pre: {
-    margin: 0,
-    background: '#0f172a',
-    color: '#e2e8f0',
-    padding: '16px',
-    borderRadius: '16px',
-    overflowX: 'auto',
-    whiteSpace: 'pre-wrap',
-    fontSize: '13px',
-    lineHeight: 1.5,
-  },
+  page: { minHeight: '100vh', background: 'linear-gradient(180deg,#f8fafc,#eef2ff)', padding: '32px 16px', fontFamily: 'Inter,Arial,sans-serif' },
+  shell: { maxWidth: '1280px', margin: '0 auto' },
+  header: { display: 'flex', justifyContent: 'space-between', gap: 24, alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap' },
+  eyebrow: { margin: 0, color: '#4f46e5', fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', fontSize: 12 },
+  h1: { margin: '8px 0', fontSize: 42, color: '#0f172a' },
+  h2: { margin: 0, fontSize: 24, color: '#0f172a' },
+  subtitle: { color: '#475569', fontSize: 18, maxWidth: 760, lineHeight: 1.6 },
+  muted: { margin: '8px 0 0', color: '#64748b', lineHeight: 1.5 },
+  statusPill: { display: 'flex', gap: 10, alignItems: 'center', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 999, padding: '10px 14px', color: '#334155' },
+  dot: { width: 10, height: 10, borderRadius: 999 },
+  error: { background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', padding: 14, borderRadius: 14, marginBottom: 20 },
+  grid: { display: 'grid', gridTemplateColumns: '1.1fr .9fr', gap: 24, alignItems: 'start' },
+  stack: { display: 'flex', flexDirection: 'column', gap: 24 },
+  card: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 22, overflow: 'hidden', boxShadow: '0 18px 45px rgba(15,23,42,.06)' },
+  cardHeader: { padding: 22, borderBottom: '1px solid #e2e8f0', background: '#fafafa' },
+  messages: { minHeight: 360, display: 'flex', flexDirection: 'column', gap: 14, padding: 22, background: '#fcfcfd' },
+  bubble: { maxWidth: '82%', borderRadius: 18, padding: '14px 16px', boxShadow: '0 8px 18px rgba(15,23,42,.05)' },
+  role: { display: 'block', textTransform: 'uppercase', letterSpacing: '.08em', fontSize: 11, marginBottom: 6 },
+  messageText: { margin: 0, whiteSpace: 'pre-wrap', lineHeight: 1.6 },
+  loading: { color: '#4f46e5', fontWeight: 700 },
+  chatForm: { borderTop: '1px solid #e2e8f0', padding: 20, display: 'flex', flexDirection: 'column', gap: 12 },
+  textarea: { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 14, padding: 14, fontSize: 15, resize: 'vertical' },
+  formGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, padding: 22 },
+  label: { display: 'flex', flexDirection: 'column', gap: 7, color: '#334155', fontWeight: 700 },
+  input: { border: '1px solid #cbd5e1', borderRadius: 12, padding: '11px 12px', fontSize: 15 },
+  actions: { display: 'flex', gap: 12, padding: '0 22px 22px', flexWrap: 'wrap' },
+  primaryButton: { background: '#111827', color: '#fff', border: 0, borderRadius: 999, padding: '12px 18px', fontWeight: 800, cursor: 'pointer' },
+  secondaryButton: { background: '#4f46e5', color: '#fff', border: 0, borderRadius: 999, padding: '12px 18px', fontWeight: 800, cursor: 'pointer' },
+  section: { marginTop: 28, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 22, padding: 24, boxShadow: '0 18px 45px rgba(15,23,42,.05)' },
+  sectionHeader: { display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginBottom: 20 },
+  badge: { background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', borderRadius: 999, padding: '8px 12px', fontSize: 13, fontWeight: 800 },
+  dayGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 18 },
+  dayCard: { border: '1px solid #e2e8f0', borderRadius: 18, padding: 18, background: '#f8fafc' },
+  dayTitle: { margin: '0 0 14px', color: '#0f172a' },
+  mealStack: { display: 'flex', flexDirection: 'column', gap: 12 },
+  mealCard: { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 16, padding: 15 },
+  mealTopRow: { display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' },
+  mealName: { color: '#0f172a', lineHeight: 1.4 },
+  usdaBadge: { background: '#ecfdf5', color: '#047857', borderRadius: 999, padding: '5px 8px', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap' },
+  estimateBadge: { background: '#fff7ed', color: '#c2410c', borderRadius: 999, padding: '5px 8px', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap' },
+  metrics: { display: 'flex', flexWrap: 'wrap', gap: 10, color: '#475569', fontSize: 13, marginTop: 12 },
+  chips: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  chip: { background: '#eef2ff', color: '#4338ca', borderRadius: 999, padding: '6px 9px', fontSize: 12, fontWeight: 700 },
+  shoppingGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 16 },
+  shoppingCard: { border: '1px solid #e2e8f0', borderRadius: 16, padding: 16, background: '#f8fafc' },
+  categoryTitle: { margin: '0 0 12px', color: '#0f172a' },
+  checkList: { display: 'flex', flexDirection: 'column', gap: 10 },
+  checkRow: { display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 9, alignItems: 'center', color: '#334155' },
+  quantity: { color: '#64748b' },
 };
