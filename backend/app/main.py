@@ -7,12 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from app.services.usda import enrich_meal_plan_with_usda
-
 app = FastAPI(
     title="Food Safety AI Agent",
-    description="Nutrition chat, meal planning, shopping-list APIs, and USDA-grounded nutrition enrichment.",
-    version="0.2.0",
+    description="Nutrition chat, meal planning, and shopping-list APIs.",
+    version="0.2.1",
 )
 
 allowed_origins = [
@@ -128,15 +126,11 @@ def create_meal_plan(request: MealPlanRequest) -> Any:
             "Create a practical meal plan. Return JSON only with keys: summary, days, "
             "and notes. Each day must contain meals; each meal must include name, ingredients, "
             "estimated_calories, and estimated_protein_g. Respect allergies and dietary limits. "
-            "Use simple ingredient names that can be mapped to USDA foods where possible. "
             "Estimates must be clearly identified as estimates."
         ),
         user_input=json.dumps(prompt),
     )
-    meal_plan = parse_json_response(result)
-    if isinstance(meal_plan, dict):
-        meal_plan = enrich_meal_plan_with_usda(meal_plan)
-    return meal_plan
+    return parse_json_response(result)
 
 
 @app.post("/shopping-list")
