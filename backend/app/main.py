@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Food Safety AI Agent",
     description="Nutrition chat, meal planning, and shopping-list APIs.",
-    version="0.2.1",
+    version="0.2.2",
 )
 
 allowed_origins = [
@@ -88,6 +88,23 @@ def parse_json_response(text: str) -> Any:
         ) from exc
 
 
+def safe_enrich_meal_plan(meal_plan: Any) -> Any:
+    if not isinstance(meal_plan, dict):
+        return meal_plan
+
+    try:
+        from app.services.usda import enrich_meal_plan_with_usda
+
+        return enrich_meal_plan_with_usda(meal_plan)
+    except Exception as exc:
+        meal_plan["nutrition_grounding"] = {
+            "source": "model estimate",
+            "status": "skipped",
+            "warning": f"Nutrition enrichment failed safely: {type(exc).__name__}",
+        }
+        return meal_plan
+
+
 @app.get("/")
 def root() -> dict[str, str]:
     return {"status": "ok", "project": "Food Safety AI Agent"}
@@ -126,11 +143,13 @@ def create_meal_plan(request: MealPlanRequest) -> Any:
             "Create a practical meal plan. Return JSON only with keys: summary, days, "
             "and notes. Each day must contain meals; each meal must include name, ingredients, "
             "estimated_calories, and estimated_protein_g. Respect allergies and dietary limits. "
+            "Use simple ingredient names that can be mapped to USDA foods where possible. "
             "Estimates must be clearly identified as estimates."
         ),
         user_input=json.dumps(prompt),
     )
-    return parse_json_response(result)
+    meal_plan = parse_json_response(result)
+    return safe_enrich_meal_plan(meal_plan)
 
 
 @app.post("/shopping-list")
