@@ -7,10 +7,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from app.services.bag_optimizer import optimize_bag
+from app.services.copilot_router import build_context_prompt, detect_intent
+from app.services.product_intelligence import compare_products, explain_product
+
 app = FastAPI(
     title="Food Safety AI Agent",
-    description="Nutrition chat, meal planning, and shopping-list APIs.",
-    version="0.2.2",
+    description="Nutrition chat, meal planning, shopping-list APIs, product explainability, and bag optimization.",
+    version="0.3.0",
 )
 
 allowed_origins = [
@@ -36,6 +40,11 @@ class ChatResponse(BaseModel):
     response: str
 
 
+class ContextChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
 class MealPlanRequest(BaseModel):
     days: int = Field(default=5, ge=1, le=7)
     goal: str = "balanced nutrition"
@@ -48,6 +57,21 @@ class MealPlanRequest(BaseModel):
 class ShoppingListRequest(BaseModel):
     meal_plan: Any
     servings: int = Field(default=1, ge=1, le=20)
+
+
+class ProductExplainRequest(BaseModel):
+    product: dict[str, Any]
+    goal: str = "balanced nutrition"
+
+
+class ProductCompareRequest(BaseModel):
+    products: list[dict[str, Any]] = Field(min_length=2)
+    goal: str = "balanced nutrition"
+
+
+class BagOptimizeRequest(BaseModel):
+    items: list[dict[str, Any]] = []
+    goal: str = "balanced nutrition"
 
 
 def get_client() -> OpenAI:
@@ -128,6 +152,21 @@ def chat(request: ChatRequest) -> ChatResponse:
     return ChatResponse(response=answer)
 
 
+@app.post("/copilot/chat")
+def context_chat(request: ContextChatRequest) -> dict[str, Any]:
+    intent = detect_intent(request.message)
+    context_prompt = build_context_prompt(request.message, request.context)
+    answer = run_ai(
+        instructions=(
+            "You are Guiltless AI, a context-aware nutrition copilot inside a food scoring and shopping app. "
+            "Use the supplied product, user goal, bag, and preference context. Prefer actionable next steps such as explain, compare, swap, meal-plan, or add-to-bag. "
+            "Do not invent medical claims; keep recommendations practical and transparent."
+        ),
+        user_input=context_prompt,
+    )
+    return {"intent": intent, "response": answer, "context_used": request.context}
+
+
 @app.post("/meal-plan")
 def create_meal_plan(request: MealPlanRequest) -> Any:
     prompt = {
@@ -166,3 +205,18 @@ def create_shopping_list(request: ShoppingListRequest) -> Any:
         ),
     )
     return parse_json_response(result)
+
+
+@app.post("/product/explain")
+def product_explain(request: ProductExplainRequest) -> dict[str, Any]:
+    return explain_product(request.product, request.goal)
+
+
+@app.post("/product/compare")
+def product_compare(request: ProductCompareRequest) -> dict[str, Any]:
+    return compare_products(request.products, request.goal)
+
+
+@app.post("/bag/optimize")
+def bag_optimize(request: BagOptimizeRequest) -> dict[str, Any]:
+    return optimize_bag(request.items, request.goal)
