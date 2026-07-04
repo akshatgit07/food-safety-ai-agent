@@ -49,6 +49,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.';
 }
 
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? 'No tool result returned.';
+  } catch {
+    return 'The tool result could not be displayed.';
+  }
+}
+
 function ProductOption({ product }: { product: Product }) {
   return (
     <>
@@ -57,7 +65,7 @@ function ProductOption({ product }: { product: Product }) {
   );
 }
 
-export default function ProductIntelligence({ apiUrl }: { apiUrl?: string }) {
+export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: string; mealPlan?: JsonObject | null }) {
   const [goal, setGoal] = useState('high protein');
 
   const [explainIndex, setExplainIndex] = useState(0);
@@ -162,7 +170,10 @@ export default function ProductIntelligence({ apiUrl }: { apiUrl?: string }) {
         context: {
           goal,
           product: DEMO_PRODUCTS[copilotProductIndex],
+          products: DEMO_PRODUCTS,
           bag: bagIndexes.map((index) => DEMO_PRODUCTS[index]),
+          meal_plan: mealPlan,
+          servings: 1,
           preferences: ['simple ingredients', 'higher protein'],
         },
       }));
@@ -177,9 +188,9 @@ export default function ProductIntelligence({ apiUrl }: { apiUrl?: string }) {
     <section style={styles.section}>
       <div style={styles.sectionHeader}>
         <div>
-          <p style={styles.eyebrow}>Sprint 1 · Product intelligence</p>
-          <h2 style={styles.heading}>Turn a food label into a decision</h2>
-          <p style={styles.subtitle}>Four demo-ready workflows, powered by the same FastAPI backend.</p>
+          <p style={styles.eyebrow}>Sprint 2 · Agentic copilot</p>
+          <h2 style={styles.heading}>Route a question to the right nutrition tool</h2>
+          <p style={styles.subtitle}>Explain, compare, optimize, plan, shop, or cook through one context-aware entry point.</p>
         </div>
         <label style={styles.goalLabel}>
           Shared nutrition goal
@@ -277,8 +288,24 @@ export default function ProductIntelligence({ apiUrl }: { apiUrl?: string }) {
           <InlineError message={copilotError} />
           {copilotResult && (
             <div style={styles.resultBox}>
-              <span style={styles.intentBadge}>{String(copilotResult.intent ?? 'general_chat').replaceAll('_', ' ')}</span>
+              <div style={styles.intentRow}>
+                <span style={styles.intentBadge}>{String(copilotResult.intent ?? 'general_chat').replaceAll('_', ' ')}</span>
+                {copilotResult.mode && <span style={styles.modeLabel}>{String(copilotResult.mode).replaceAll('_', ' ')}</span>}
+              </div>
               <p style={styles.copilotAnswer}>{copilotResult.response}</p>
+              {(copilotResult.suggested_actions ?? []).length > 0 && (
+                <div style={styles.actionChips}>
+                  {(copilotResult.suggested_actions ?? []).map((action: string) => (
+                    <button key={action} type="button" style={styles.actionChip} onClick={() => setCopilotMessage(action)}>{action}</button>
+                  ))}
+                </div>
+              )}
+              {copilotResult.tool_result != null && (
+                <details style={styles.toolDetails}>
+                  <summary style={styles.toolSummary}>Tool result preview</summary>
+                  <pre style={styles.toolPreview}>{safeJson(copilotResult.tool_result)}</pre>
+                </details>
+              )}
             </div>
           )}
         </article>
@@ -345,7 +372,14 @@ const styles: Record<string, any> = {
   form: { display: 'flex', flexDirection: 'column', gap: 11 },
   textarea: { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 11, padding: 11, resize: 'vertical', fontFamily: 'inherit', fontSize: 14 },
   intentBadge: { display: 'inline-flex', borderRadius: 999, padding: '5px 8px', background: '#eef2ff', color: '#4338ca', fontSize: 10, fontWeight: 900, textTransform: 'uppercase' },
+  intentRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' },
+  modeLabel: { color: '#64748b', fontSize: 10, fontWeight: 800, textTransform: 'uppercase' },
   copilotAnswer: { margin: '10px 0 0', color: '#334155', fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap' },
+  actionChips: { display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 },
+  actionChip: { border: '1px solid #c7d2fe', borderRadius: 999, padding: '6px 9px', background: '#fff', color: '#4338ca', cursor: 'pointer', fontSize: 11, fontWeight: 800 },
+  toolDetails: { marginTop: 12, borderTop: '1px solid #e2e8f0', paddingTop: 10 },
+  toolSummary: { color: '#475569', cursor: 'pointer', fontSize: 12, fontWeight: 800 },
+  toolPreview: { maxHeight: 220, overflow: 'auto', margin: '9px 0 0', borderRadius: 10, padding: 10, background: '#0f172a', color: '#e2e8f0', fontSize: 10, lineHeight: 1.45, whiteSpace: 'pre-wrap' },
   explainTop: { display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' },
   scoreCircle: { display: 'grid', placeItems: 'center', width: 48, height: 48, borderRadius: 999, background: '#111827', color: '#fff', fontWeight: 900, fontSize: 18 },
   signals: { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 10 },

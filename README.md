@@ -28,6 +28,20 @@ The FastAPI backend exposes deterministic product-scoring workflows that do not 
 
 The Next.js frontend includes a Product Intelligence demo for selecting products, comparing results, and reviewing projected bag improvements.
 
+## Agentic Copilot routing
+
+`POST /copilot/chat` uses the lightweight router in `backend/app/agent/` to select one of these workflows:
+
+- product explanation
+- product comparison
+- bag optimization
+- meal planning
+- shopping-list generation
+- recipes
+- general nutrition chat
+
+Every response includes `intent`, `response`, `suggested_actions`, and `tool_result`. Deterministic product tools run without OpenAI. Generative tools use `OPENAI_API_KEY`, and routing failures fall back to normal chat.
+
 ## Local development
 
 Start the API:
@@ -37,7 +51,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000 --env-file ../.env.local
 ```
 
 Start the frontend in another terminal:

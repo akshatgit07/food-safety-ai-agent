@@ -239,7 +239,7 @@ export default function Home() {
           </div>
         </section>
 
-        <ProductIntelligence apiUrl={apiUrl} />
+        <ProductIntelligence apiUrl={apiUrl} mealPlan={mealPlan} />
 
         {mealPlan && (
           <section style={styles.section}>

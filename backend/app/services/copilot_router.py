@@ -5,15 +5,17 @@ from typing import Any
 
 def detect_intent(message: str) -> str:
     text = message.lower()
-    if any(word in text for word in ["compare", "versus", " vs "]):
+    if any(phrase in text for phrase in ["shopping list", "grocery list", "groceries", "what should i buy"]):
+        return "shopping_list"
+    if any(word in text for word in ["compare", "versus", " vs ", "better product"]):
         return "compare_products"
     if any(word in text for word in ["bag", "cart", "swap", "optimize"]):
         return "optimize_bag"
-    if any(word in text for word in ["recipe", "cook", "pantry", "ingredients I have"]):
+    if any(word in text for word in ["recipe", "cook", "pantry", "ingredients i have", "make with"]):
         return "recipe"
-    if any(word in text for word in ["meal plan", "weekly plan", "what should i eat"]):
+    if any(word in text for word in ["meal plan", "meal-plan", "weekly plan", "what should i eat", "days of meals", "day plan"]):
         return "meal_plan"
-    if any(word in text for word in ["why", "score", "healthy", "product"]):
+    if any(word in text for word in ["why", "score", "healthy", "product", "nutrition label"]):
         return "explain_product"
     return "general_chat"
 

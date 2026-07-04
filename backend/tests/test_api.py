@@ -110,7 +110,7 @@ class ApiTests(unittest.TestCase):
         mocked_run_ai.assert_called_once()
 
     def test_context_copilot_has_deterministic_fallback(self):
-        context = {"goal": "high protein", "product": PRODUCT_A, "bag": [PRODUCT_B]}
+        context = {"goal": "high protein", "product": PRODUCT_B, "bag": [PRODUCT_A, PRODUCT_B]}
         with patch.dict("os.environ", {}, clear=True):
             response = self.client.post(
                 "/copilot/chat",
@@ -120,11 +120,33 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["intent"], "optimize_bag")
         self.assertEqual(response.json()["context_used"], context)
-        self.assertIn("yogurt", response.json()["response"].lower())
-        self.assertEqual(response.json()["mode"], "deterministic_fallback")
+        self.assertIn("bag", response.json()["response"].lower())
+        self.assertEqual(response.json()["mode"], "tool")
+        self.assertIn("suggested_actions", response.json())
+        self.assertIn("tool_result", response.json())
+
+    def test_context_copilot_acceptance_routes_return_structured_json(self):
+        cases = [
+            ("Why is this product score low?", {"product": PRODUCT_B}, "explain_product"),
+            ("Compare these two products", {"products": [PRODUCT_A, PRODUCT_B]}, "compare_products"),
+            ("Optimize my bag", {"bag": [PRODUCT_A, PRODUCT_B]}, "optimize_bag"),
+        ]
+        with patch.dict("os.environ", {}, clear=True):
+            for message, context, expected_intent in cases:
+                with self.subTest(message=message):
+                    response = self.client.post(
+                        "/copilot/chat",
+                        json={"message": message, "context": context},
+                    )
+                    payload = response.json()
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(payload["intent"], expected_intent)
+                    self.assertIsInstance(payload["response"], str)
+                    self.assertIsInstance(payload["suggested_actions"], list)
+                    self.assertIsInstance(payload["tool_result"], dict)
 
     @patch("app.main.run_ai", return_value="Choose the yogurt for more protein and less sugar.")
-    def test_context_copilot_uses_openai_when_configured(self, mocked_run_ai):
+    def test_context_copilot_falls_back_to_openai_when_tool_context_is_missing(self, mocked_run_ai):
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
             response = self.client.post(
                 "/copilot/chat",
@@ -132,7 +154,24 @@ class ApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["mode"], "openai")
+        self.assertEqual(response.json()["intent"], "general_chat")
+        self.assertEqual(response.json()["mode"], "routing_fallback")
+        mocked_run_ai.assert_called_once()
+
+    @patch(
+        "app.main.run_ai",
+        return_value='{"summary":"Five-day plan","days":[],"notes":[]}',
+    )
+    def test_context_copilot_routes_meal_plan(self, mocked_run_ai):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            response = self.client.post(
+                "/copilot/chat",
+                json={"message": "Build me a 5 day meal plan", "context": {"goal": "high protein"}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["intent"], "meal_plan")
+        self.assertEqual(response.json()["tool_result"]["summary"], "Five-day plan")
         mocked_run_ai.assert_called_once()
 
 
