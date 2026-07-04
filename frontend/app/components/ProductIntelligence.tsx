@@ -82,12 +82,16 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
   const [bagResult, setBagResult] = useState<JsonObject | null>(null);
   const [bagLoading, setBagLoading] = useState(false);
   const [bagError, setBagError] = useState<string | null>(null);
+  const [appliedSwap, setAppliedSwap] = useState<string | null>(null);
 
-  const [copilotProductIndex, setCopilotProductIndex] = useState(1);
   const [copilotMessage, setCopilotMessage] = useState('Should I swap this snack for something better?');
   const [copilotResult, setCopilotResult] = useState<JsonObject | null>(null);
   const [copilotLoading, setCopilotLoading] = useState(false);
   const [copilotError, setCopilotError] = useState<string | null>(null);
+
+  const currentProduct = DEMO_PRODUCTS[explainIndex];
+  const currentProductScore = explainResult?.score;
+  const mainSwap = (bagResult?.swaps ?? [])[0] as JsonObject | undefined;
 
   function requireApiUrl() {
     if (!apiUrl) throw new Error('NEXT_PUBLIC_API_URL is not configured. Add it to frontend/.env.local and restart Next.js.');
@@ -118,6 +122,14 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     }
   }
 
+  function selectProduct(index: number) {
+    setExplainIndex(index);
+    setExplainResult(null);
+    setCopilotResult(null);
+    const alternativeIndex = index === 0 ? 2 : 0;
+    setCompareIndexes([index, alternativeIndex]);
+  }
+
   async function compareProducts() {
     setCompareLoading(true);
     setCompareError(null);
@@ -139,6 +151,14 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     setBagIndexes((current) => current.includes(index) ? current.filter((value) => value !== index) : [...current, index]);
     setBagResult(null);
     setBagError(null);
+    setAppliedSwap(null);
+  }
+
+  function applySuggestedSwap() {
+    if (!mainSwap) return;
+    const originalIndex = DEMO_PRODUCTS.findIndex((product) => product.name === mainSwap.replace);
+    if (originalIndex >= 0) setBagIndexes((current) => current.filter((index) => index !== originalIndex));
+    setAppliedSwap(`${mainSwap.replace} → ${mainSwap.with}`);
   }
 
   async function optimizeBag() {
@@ -169,7 +189,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
         message: copilotMessage.trim(),
         context: {
           goal,
-          product: DEMO_PRODUCTS[copilotProductIndex],
+          product: currentProduct,
           products: DEMO_PRODUCTS,
           bag: bagIndexes.map((index) => DEMO_PRODUCTS[index]),
           meal_plan: mealPlan,
@@ -188,14 +208,24 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     <section style={styles.section}>
       <div style={styles.sectionHeader}>
         <div>
-          <p style={styles.eyebrow}>Sprint 2 · Agentic copilot</p>
-          <h2 style={styles.heading}>Route a question to the right nutrition tool</h2>
-          <p style={styles.subtitle}>Explain, compare, optimize, plan, shop, or cook through one context-aware entry point.</p>
+          <p style={styles.eyebrow}>Guiltless AI Copilot</p>
+          <h2 style={styles.heading}>Turn a food label into a decision</h2>
+          <p style={styles.subtitle}>Explain scores, compare alternatives, optimize the bag, and ask a context-aware copilot.</p>
         </div>
         <label style={styles.goalLabel}>
           Shared nutrition goal
           <input style={styles.input} value={goal} onChange={(event) => setGoal(event.target.value)} />
         </label>
+      </div>
+
+      <div style={styles.workflow} aria-label="Guiltless AI decision workflow">
+        {['Product', 'Explain', 'Compare', 'Optimize', 'Copilot'].map((item, index) => (
+          <div key={item} style={styles.workflowItem}>
+            <span style={styles.workflowNumber}>{index + 1}</span>
+            <strong>{item}</strong>
+            {index < 4 && <span style={styles.workflowArrow}>→</span>}
+          </div>
+        ))}
       </div>
 
       <div style={styles.grid}>
@@ -204,13 +234,13 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
             <span style={styles.step}>01</span>
             <div><h3 style={styles.cardTitle}>Product Explainability</h3><p style={styles.cardCopy}>See the score, strengths, cautions, and goal fit.</p></div>
           </div>
-          <select style={styles.select} value={explainIndex} onChange={(event) => { setExplainIndex(Number(event.target.value)); setExplainResult(null); }}>
+          <select style={styles.select} value={explainIndex} onChange={(event) => selectProduct(Number(event.target.value))}>
             {DEMO_PRODUCTS.map((product, index) => <option key={product.name} value={index}>{product.name}</option>)}
           </select>
           <ProductFacts product={DEMO_PRODUCTS[explainIndex]} />
           <button type="button" style={styles.primaryButton} onClick={explainProduct} disabled={explainLoading}>{explainLoading ? 'Explaining…' : 'Explain this product'}</button>
           <InlineError message={explainError} />
-          {explainResult && <ExplanationResult result={explainResult} />}
+          {explainResult && <ExplanationResult result={explainResult} onAction={setCopilotMessage} />}
         </article>
 
         <article style={styles.card}>
@@ -236,16 +266,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
           ))}
           <button type="button" style={styles.primaryButton} onClick={compareProducts} disabled={compareLoading}>{compareLoading ? 'Comparing…' : 'Compare products'}</button>
           <InlineError message={compareError} />
-          {compareResult && (
-            <div style={styles.resultBox}>
-              <span style={styles.resultLabel}>Best fit</span>
-              <strong style={styles.resultTitle}>{compareResult.winner?.name ?? 'No winner'}</strong>
-              <p style={styles.resultText}>{compareResult.recommendation}</p>
-              <div style={styles.scoreList}>
-                {(compareResult.products ?? []).map((item: JsonObject) => <span key={item.product?.name}>{item.product?.name}: <strong>{item.score}</strong></span>)}
-              </div>
-            </div>
-          )}
+          {compareResult && <ComparisonResult result={compareResult} products={DEMO_PRODUCTS} />}
         </article>
 
         <article style={styles.card}>
@@ -264,11 +285,24 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
           <button type="button" style={styles.primaryButton} onClick={optimizeBag} disabled={bagLoading}>{bagLoading ? 'Optimizing…' : 'Optimize this bag'}</button>
           <InlineError message={bagError} />
           {bagResult && (
-            <div style={styles.resultBox}>
-              <div style={styles.scoreSummary}><Score label="Current" value={bagResult.current_score} /><span style={styles.arrow}>→</span><Score label="Optimized" value={bagResult.projected_score} good /></div>
-              {(bagResult.swaps ?? []).length === 0 ? <p style={styles.resultText}>This bag already looks strong for the selected goal.</p> : (bagResult.swaps ?? []).map((swap: JsonObject) => (
-                <div key={swap.replace} style={styles.swapRow}><span>{swap.replace} → <strong>{swap.with}</strong></span><span style={styles.gain}>+{swap.score_gain}</span></div>
-              ))}
+            <div style={styles.optimizerResult}>
+              <div style={styles.scoreSummary}>
+                <Score label="Current score" value={bagResult.current_score} />
+                <span style={styles.arrow}>→</span>
+                <Score label="Optimized score" value={bagResult.projected_score} good />
+                <Score label="Score gain" value={`+${bagResult.score_gain ?? 0}`} good />
+              </div>
+              {mainSwap ? (
+                <div style={styles.mainSwap}>
+                  <span style={styles.resultLabel}>Main suggested swap</span>
+                  <strong style={styles.swapTitle}>{mainSwap.replace} <span style={styles.swapArrow}>→</span> {mainSwap.with}</strong>
+                  <p style={styles.resultText}>{mainSwap.reason}</p>
+                  <button type="button" style={styles.applyButton} onClick={applySuggestedSwap} disabled={Boolean(appliedSwap)}>
+                    {appliedSwap ? 'Suggested swap applied' : 'Apply suggested swap'}
+                  </button>
+                </div>
+              ) : <p style={styles.resultText}>This bag already looks strong for the selected goal.</p>}
+              {appliedSwap && <div style={styles.successNotice}>✓ Applied in this demo: {appliedSwap}</div>}
             </div>
           )}
         </article>
@@ -276,12 +310,23 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
         <article style={styles.card}>
           <div style={styles.cardHeader}>
             <span style={styles.step}>04</span>
-            <div><h3 style={styles.cardTitle}>Context-aware Copilot</h3><p style={styles.cardCopy}>Ask with the product, bag, goal, and preferences attached.</p></div>
+            <div><h3 style={styles.cardTitle}>Ask Guiltless Copilot</h3><p style={styles.cardCopy}>Your product, goal, and bag context travel with every question.</p></div>
+          </div>
+          <div style={styles.contextPanel}>
+            <span style={styles.contextLabel}>Current decision context</span>
+            <div style={styles.contextGrid}>
+              <ContextMetric label="Product" value={currentProduct.name} />
+              <ContextMetric label="Product score" value={currentProductScore ?? 'Run Explain'} />
+              <ContextMetric label="Goal" value={goal} />
+              <ContextMetric label="Bag score" value={bagResult?.current_score ?? 'Run Optimize'} />
+            </div>
+          </div>
+          <div style={styles.promptChips}>
+            {['Why is this score low?', 'Compare alternatives', 'Add to breakfast plan', 'Optimize my bag'].map((prompt) => (
+              <button key={prompt} type="button" style={styles.promptChip} onClick={() => setCopilotMessage(prompt)}>{prompt}</button>
+            ))}
           </div>
           <form style={styles.form} onSubmit={askCopilot}>
-            <select style={styles.select} value={copilotProductIndex} onChange={(event) => setCopilotProductIndex(Number(event.target.value))}>
-              {DEMO_PRODUCTS.map((product, index) => <option key={product.name} value={index}>{product.name}</option>)}
-            </select>
             <textarea style={styles.textarea} rows={4} value={copilotMessage} onChange={(event) => setCopilotMessage(event.target.value)} />
             <button type="submit" style={styles.primaryButton} disabled={copilotLoading}>{copilotLoading ? 'Thinking with context…' : 'Ask the copilot'}</button>
           </form>
@@ -310,6 +355,11 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
           )}
         </article>
       </div>
+
+      <footer style={styles.integrationFooter}>
+        <span>Designed to plug into:</span>
+        {['Snap', 'Product Detail', 'Shopping Bag', 'Meal Planner', 'Tracker'].map((item) => <strong key={item}>{item}</strong>)}
+      </footer>
     </section>
   );
 }
@@ -318,7 +368,8 @@ function ProductFacts({ product }: { product: Product }) {
   return <div style={styles.facts}><ProductOption product={product} /><span>{product.nutrition.fiber_g}g fiber · {product.nutrition.sodium_mg}mg sodium</span></div>;
 }
 
-function ExplanationResult({ result }: { result: JsonObject }) {
+function ExplanationResult({ result, onAction }: { result: JsonObject; onAction: (action: string) => void }) {
+  const nextActions = ['Compare alternatives', 'Add to meal plan', 'Build breakfast', 'Add to shopping list'];
   return (
     <div style={styles.resultBox}>
       <div style={styles.explainTop}><div><span style={styles.resultLabel}>Verdict</span><strong style={styles.resultTitle}>{result.verdict}</strong></div><span style={styles.scoreCircle}>{result.score}</span></div>
@@ -327,6 +378,44 @@ function ExplanationResult({ result }: { result: JsonObject }) {
         {(result.positives ?? []).map((item: string) => <span key={item} style={styles.positive}>+ {item}</span>)}
         {(result.cautions ?? []).map((item: string) => <span key={item} style={styles.caution}>• {item}</span>)}
       </div>
+      <div style={styles.nextActions}>
+        <span style={styles.resultLabel}>Recommended next actions</span>
+        <div style={styles.actionChips}>
+          {nextActions.map((action) => <button key={action} type="button" style={styles.actionChip} onClick={() => onAction(action)}>{action}</button>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ComparisonResult({ result, products }: { result: JsonObject; products: Product[] }) {
+  return (
+    <div style={styles.resultBox}>
+      <div style={styles.tableWrap}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              {['Product', 'Protein', 'Sugar', 'Fiber', 'Score'].map((heading) => <th key={heading} style={styles.th}>{heading}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {(result.products ?? []).map((item: JsonObject) => {
+              const product = products.find((candidate) => candidate.name === item.product?.name);
+              const isWinner = result.winner?.name === item.product?.name;
+              return (
+                <tr key={item.product?.name} style={isWinner ? styles.winnerRow : undefined}>
+                  <td style={styles.td}><strong>{item.product?.name}</strong>{isWinner && <span style={styles.bestBadge}>Best fit</span>}</td>
+                  <td style={styles.td}>{product?.nutrition.protein_g ?? '—'}g</td>
+                  <td style={styles.td}>{product?.nutrition.sugar_g ?? '—'}g</td>
+                  <td style={styles.td}>{product?.nutrition.fiber_g ?? '—'}g</td>
+                  <td style={styles.td}><strong style={styles.tableScore}>{item.score}</strong></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p style={styles.recommendation}>{result.recommendation}</p>
     </div>
   );
 }
@@ -335,55 +424,82 @@ function InlineError({ message }: { message: string | null }) {
   return message ? <div role="alert" style={styles.error}>{message}</div> : null;
 }
 
-function Score({ label, value, good = false }: { label: string; value: number; good?: boolean }) {
+function ContextMetric({ label, value }: { label: string; value: string | number }) {
+  return <div style={styles.contextMetric}><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function Score({ label, value, good = false }: { label: string; value: string | number; good?: boolean }) {
   return <div><span style={styles.resultLabel}>{label}</span><strong style={{ ...styles.bigScore, color: good ? '#047857' : '#0f172a' }}>{value}</strong></div>;
 }
 
 const styles: Record<string, any> = {
-  section: { marginTop: 28, background: '#0f172a', color: '#fff', borderRadius: 24, padding: 24, boxShadow: '0 24px 60px rgba(15,23,42,.18)' },
+  section: { marginTop: 28, background: 'linear-gradient(145deg,#073b2a,#0b4f38)', color: '#fff', borderRadius: 28, padding: 26, boxShadow: '0 24px 60px rgba(6,78,59,.2)' },
   sectionHeader: { display: 'flex', justifyContent: 'space-between', gap: 20, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 22 },
-  eyebrow: { margin: '0 0 7px', color: '#a5b4fc', fontWeight: 900, letterSpacing: '.12em', textTransform: 'uppercase', fontSize: 11 },
-  heading: { margin: 0, fontSize: 28 },
-  subtitle: { margin: '8px 0 0', color: '#cbd5e1' },
+  eyebrow: { margin: '0 0 7px', color: '#86efac', fontWeight: 900, letterSpacing: '.12em', textTransform: 'uppercase', fontSize: 11 },
+  heading: { margin: 0, fontSize: 30 },
+  subtitle: { margin: '8px 0 0', color: '#d1fae5', lineHeight: 1.55 },
   goalLabel: { display: 'flex', flexDirection: 'column', gap: 7, minWidth: 250, color: '#e2e8f0', fontWeight: 800, fontSize: 13 },
-  input: { border: '1px solid #475569', borderRadius: 11, padding: '10px 12px', background: '#1e293b', color: '#fff', fontSize: 15 },
+  input: { border: '1px solid #4d8b73', borderRadius: 12, padding: '10px 12px', background: '#0b513a', color: '#fff', fontSize: 15 },
+  workflow: { display: 'grid', gridTemplateColumns: 'repeat(5,minmax(0,1fr))', gap: 8, marginBottom: 20, border: '1px solid rgba(167,243,208,.25)', borderRadius: 16, padding: 10, background: 'rgba(255,255,255,.08)' },
+  workflowItem: { position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 7, minWidth: 0, borderRadius: 11, padding: '9px 6px', color: '#ecfdf5', fontSize: 12 },
+  workflowNumber: { display: 'grid', placeItems: 'center', width: 22, height: 22, borderRadius: 999, background: '#bbf7d0', color: '#14532d', fontWeight: 900, fontSize: 10 },
+  workflowArrow: { position: 'absolute', right: -8, color: '#6ee7b7', fontSize: 16 },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(285px,1fr))', gap: 16 },
-  card: { display: 'flex', flexDirection: 'column', gap: 13, minWidth: 0, background: '#fff', color: '#0f172a', borderRadius: 18, padding: 18 },
+  card: { display: 'flex', flexDirection: 'column', gap: 13, minWidth: 0, background: '#fff', color: '#12372a', borderRadius: 20, padding: 18, boxShadow: '0 12px 30px rgba(6,78,59,.12)' },
   cardHeader: { display: 'flex', gap: 12, alignItems: 'flex-start' },
-  step: { display: 'grid', placeItems: 'center', flex: '0 0 auto', width: 34, height: 34, borderRadius: 10, background: '#eef2ff', color: '#4338ca', fontSize: 12, fontWeight: 900 },
+  step: { display: 'grid', placeItems: 'center', flex: '0 0 auto', width: 34, height: 34, borderRadius: 10, background: '#dcfce7', color: '#166534', fontSize: 12, fontWeight: 900 },
   cardTitle: { margin: 0, fontSize: 18 },
   cardCopy: { margin: '5px 0 0', color: '#64748b', fontSize: 13, lineHeight: 1.45 },
   select: { width: '100%', border: '1px solid #cbd5e1', borderRadius: 11, padding: '10px 11px', background: '#fff', color: '#0f172a', fontSize: 14 },
   facts: { display: 'flex', flexDirection: 'column', gap: 5, borderRadius: 12, padding: 12, background: '#f8fafc', color: '#475569', fontSize: 12, fontWeight: 700 },
-  primaryButton: { width: '100%', border: 0, borderRadius: 999, padding: '11px 15px', background: '#4f46e5', color: '#fff', fontWeight: 900, cursor: 'pointer' },
-  resultBox: { marginTop: 2, border: '1px solid #e2e8f0', borderRadius: 14, padding: 14, background: '#f8fafc' },
+  primaryButton: { width: '100%', border: 0, borderRadius: 999, padding: '11px 15px', background: '#166534', color: '#fff', fontWeight: 900, cursor: 'pointer' },
+  resultBox: { marginTop: 2, border: '1px solid #d1fae5', borderRadius: 15, padding: 14, background: '#f7fef9' },
   resultLabel: { display: 'block', color: '#64748b', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '.08em' },
   resultTitle: { display: 'block', marginTop: 3, color: '#0f172a', fontSize: 16 },
   resultText: { margin: '9px 0 0', color: '#475569', fontSize: 13, lineHeight: 1.5 },
-  scoreList: { display: 'flex', flexDirection: 'column', gap: 5, marginTop: 10, color: '#334155', fontSize: 13 },
+  nextActions: { marginTop: 12, borderTop: '1px solid #d1fae5', paddingTop: 10 },
+  tableWrap: { overflowX: 'auto' },
+  table: { width: '100%', borderCollapse: 'collapse', fontSize: 11, color: '#334155' },
+  th: { padding: '7px 6px', borderBottom: '1px solid #cbd5e1', color: '#64748b', textAlign: 'left', textTransform: 'uppercase', fontSize: 9, letterSpacing: '.04em' },
+  td: { padding: '9px 6px', borderBottom: '1px solid #e2e8f0', verticalAlign: 'middle' },
+  winnerRow: { background: '#ecfdf5' },
+  bestBadge: { display: 'inline-block', marginTop: 4, borderRadius: 999, padding: '3px 6px', background: '#bbf7d0', color: '#166534', fontSize: 8, fontWeight: 900, textTransform: 'uppercase' },
+  tableScore: { display: 'inline-grid', placeItems: 'center', minWidth: 28, height: 28, borderRadius: 999, background: '#166534', color: '#fff' },
+  recommendation: { margin: '11px 0 0', borderRadius: 10, padding: 10, background: '#dcfce7', color: '#14532d', fontSize: 12, fontWeight: 700, lineHeight: 1.45 },
   checkList: { display: 'flex', flexDirection: 'column', gap: 9 },
   checkRow: { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 9, alignItems: 'center', padding: 9, borderRadius: 11, background: '#f8fafc', color: '#334155', fontSize: 13 },
   smallText: { display: 'block', marginTop: 2, color: '#94a3b8' },
-  scoreSummary: { display: 'flex', alignItems: 'center', gap: 14, marginBottom: 8 },
+  optimizerResult: { marginTop: 2, border: '1px solid #bbf7d0', borderRadius: 15, padding: 14, background: 'linear-gradient(180deg,#f0fdf4,#fff)' },
+  scoreSummary: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12, flexWrap: 'wrap' },
   bigScore: { display: 'block', fontSize: 28, lineHeight: 1.1 },
   arrow: { color: '#94a3b8', fontSize: 22 },
-  swapRow: { display: 'flex', justifyContent: 'space-between', gap: 8, padding: '8px 0', borderTop: '1px solid #e2e8f0', color: '#334155', fontSize: 12 },
-  gain: { color: '#047857', fontWeight: 900 },
+  mainSwap: { borderTop: '1px solid #bbf7d0', paddingTop: 12 },
+  swapTitle: { display: 'block', marginTop: 5, color: '#14532d', lineHeight: 1.45, fontSize: 14 },
+  swapArrow: { color: '#16a34a', padding: '0 3px' },
+  applyButton: { marginTop: 11, border: 0, borderRadius: 999, padding: '9px 12px', background: '#166534', color: '#fff', cursor: 'pointer', fontWeight: 900, fontSize: 11 },
+  successNotice: { marginTop: 10, borderRadius: 10, padding: 9, background: '#dcfce7', color: '#166534', fontSize: 11, fontWeight: 800 },
+  contextPanel: { border: '1px solid #bbf7d0', borderRadius: 13, padding: 12, background: '#f0fdf4' },
+  contextLabel: { display: 'block', marginBottom: 8, color: '#166534', fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '.08em' },
+  contextGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 },
+  contextMetric: { display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, color: '#64748b', fontSize: 9, textTransform: 'uppercase' },
+  promptChips: { display: 'flex', flexWrap: 'wrap', gap: 6 },
+  promptChip: { border: '1px solid #bbf7d0', borderRadius: 999, padding: '6px 8px', background: '#fff', color: '#166534', cursor: 'pointer', fontSize: 10, fontWeight: 800 },
   form: { display: 'flex', flexDirection: 'column', gap: 11 },
   textarea: { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 11, padding: 11, resize: 'vertical', fontFamily: 'inherit', fontSize: 14 },
-  intentBadge: { display: 'inline-flex', borderRadius: 999, padding: '5px 8px', background: '#eef2ff', color: '#4338ca', fontSize: 10, fontWeight: 900, textTransform: 'uppercase' },
+  intentBadge: { display: 'inline-flex', borderRadius: 999, padding: '5px 8px', background: '#dcfce7', color: '#166534', fontSize: 10, fontWeight: 900, textTransform: 'uppercase' },
   intentRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' },
   modeLabel: { color: '#64748b', fontSize: 10, fontWeight: 800, textTransform: 'uppercase' },
   copilotAnswer: { margin: '10px 0 0', color: '#334155', fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap' },
   actionChips: { display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 },
-  actionChip: { border: '1px solid #c7d2fe', borderRadius: 999, padding: '6px 9px', background: '#fff', color: '#4338ca', cursor: 'pointer', fontSize: 11, fontWeight: 800 },
+  actionChip: { border: '1px solid #bbf7d0', borderRadius: 999, padding: '6px 9px', background: '#fff', color: '#166534', cursor: 'pointer', fontSize: 11, fontWeight: 800 },
   toolDetails: { marginTop: 12, borderTop: '1px solid #e2e8f0', paddingTop: 10 },
   toolSummary: { color: '#475569', cursor: 'pointer', fontSize: 12, fontWeight: 800 },
   toolPreview: { maxHeight: 220, overflow: 'auto', margin: '9px 0 0', borderRadius: 10, padding: 10, background: '#0f172a', color: '#e2e8f0', fontSize: 10, lineHeight: 1.45, whiteSpace: 'pre-wrap' },
   explainTop: { display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' },
-  scoreCircle: { display: 'grid', placeItems: 'center', width: 48, height: 48, borderRadius: 999, background: '#111827', color: '#fff', fontWeight: 900, fontSize: 18 },
+  scoreCircle: { display: 'grid', placeItems: 'center', width: 48, height: 48, borderRadius: 999, background: '#166534', color: '#fff', fontWeight: 900, fontSize: 18 },
   signals: { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 10 },
   positive: { color: '#047857', fontSize: 12 },
   caution: { color: '#b45309', fontSize: 12 },
   error: { border: '1px solid #fecaca', borderRadius: 11, padding: 10, background: '#fef2f2', color: '#b91c1c', fontSize: 12, lineHeight: 1.4 },
+  integrationFooter: { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 18, borderTop: '1px solid rgba(167,243,208,.25)', paddingTop: 16, color: '#d1fae5', fontSize: 11 },
 };
