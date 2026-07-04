@@ -5,3 +5,5 @@ __pycache__/
 logs/
 *.db
 chroma_db/
+node_modules/
+.next/

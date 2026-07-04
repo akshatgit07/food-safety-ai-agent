@@ -2,10 +2,11 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
+import ProductIntelligence from './components/ProductIntelligence';
+
 type Message = { role: 'user' | 'assistant'; text: string };
 type MealPlan = Record<string, any>;
 type ShoppingList = Record<string, any>;
-
 function asArray<T = any>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
@@ -237,6 +238,8 @@ export default function Home() {
             </div>
           </div>
         </section>
+
+        <ProductIntelligence apiUrl={apiUrl} />
 
         {mealPlan && (
           <section style={styles.section}>
