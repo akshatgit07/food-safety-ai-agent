@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,8 +51,8 @@ class MealPlanRequest(BaseModel):
     days: int = Field(default=5, ge=1, le=7)
     goal: str = "balanced nutrition"
     diet: str = "no restriction"
-    allergies: list[str] = []
-    calorie_target: int | None = Field(default=None, ge=800, le=6000)
+    allergies: list[str] = Field(default_factory=list)
+    calorie_target: Optional[int] = Field(default=None, ge=800, le=6000)
     meals_per_day: int = Field(default=3, ge=1, le=6)
 
 
@@ -70,7 +72,7 @@ class ProductCompareRequest(BaseModel):
 
 
 class BagOptimizeRequest(BaseModel):
-    items: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = Field(default_factory=list)
     goal: str = "balanced nutrition"
 
 
@@ -129,6 +131,30 @@ def safe_enrich_meal_plan(meal_plan: Any) -> Any:
         return meal_plan
 
 
+def build_copilot_fallback(intent: str, context: dict[str, Any]) -> str:
+    product = context.get("product")
+    bag = context.get("bag")
+    goal = str(context.get("goal") or "balanced nutrition")
+
+    if isinstance(product, dict):
+        explanation = explain_product(product, goal)
+        product_name = explanation["product"]["name"]
+        response = f"{product_name} scores {explanation['score']}/100 for {goal}. {explanation['summary']}"
+        if isinstance(bag, list) and bag:
+            optimized = optimize_bag(bag, goal)
+            response += f" Your current bag scores {optimized['current_score']}/100"
+            if optimized["score_gain"] > 0:
+                response += f" and could improve by {optimized['score_gain']} points with the suggested swaps."
+            else:
+                response += " and does not need an immediate swap."
+        return response
+
+    return (
+        f"I detected a {intent.replace('_', ' ')} request for {goal}. "
+        "Add a product or bag to the context for a personalized recommendation."
+    )
+
+
 @app.get("/")
 def root() -> dict[str, str]:
     return {"status": "ok", "project": "Food Safety AI Agent"}
@@ -155,6 +181,14 @@ def chat(request: ChatRequest) -> ChatResponse:
 @app.post("/copilot/chat")
 def context_chat(request: ContextChatRequest) -> dict[str, Any]:
     intent = detect_intent(request.message)
+    if not os.getenv("OPENAI_API_KEY"):
+        return {
+            "intent": intent,
+            "response": build_copilot_fallback(intent, request.context),
+            "context_used": request.context,
+            "mode": "deterministic_fallback",
+        }
+
     context_prompt = build_context_prompt(request.message, request.context)
     answer = run_ai(
         instructions=(
@@ -164,7 +198,12 @@ def context_chat(request: ContextChatRequest) -> dict[str, Any]:
         ),
         user_input=context_prompt,
     )
-    return {"intent": intent, "response": answer, "context_used": request.context}
+    return {
+        "intent": intent,
+        "response": answer,
+        "context_used": request.context,
+        "mode": "openai",
+    }
 
 
 @app.post("/meal-plan")
