@@ -1,5 +1,7 @@
 import { ReactNode } from 'react';
 
+import './globals.css';
+
 export const metadata = {
   title: 'Guiltless AI · Nutrition Copilot',
   description: 'Explain food labels, compare products, optimize a shopping bag, and plan meals.',
