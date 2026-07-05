@@ -1,20 +1,22 @@
+from __future__ import annotations
+
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from app.agent import CopilotRouter
 from app.services.bag_optimizer import optimize_bag
-from app.services.copilot_router import build_context_prompt, detect_intent
 from app.services.product_intelligence import compare_products, explain_product
 
 app = FastAPI(
     title="Food Safety AI Agent",
     description="Nutrition chat, meal planning, shopping-list APIs, product explainability, and bag optimization.",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 allowed_origins = [
@@ -49,8 +51,8 @@ class MealPlanRequest(BaseModel):
     days: int = Field(default=5, ge=1, le=7)
     goal: str = "balanced nutrition"
     diet: str = "no restriction"
-    allergies: list[str] = []
-    calorie_target: int | None = Field(default=None, ge=800, le=6000)
+    allergies: list[str] = Field(default_factory=list)
+    calorie_target: Optional[int] = Field(default=None, ge=800, le=6000)
     meals_per_day: int = Field(default=3, ge=1, le=6)
 
 
@@ -70,7 +72,7 @@ class ProductCompareRequest(BaseModel):
 
 
 class BagOptimizeRequest(BaseModel):
-    items: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = Field(default_factory=list)
     goal: str = "balanced nutrition"
 
 
@@ -129,6 +131,33 @@ def safe_enrich_meal_plan(meal_plan: Any) -> Any:
         return meal_plan
 
 
+def generate_meal_plan_data(prompt: dict[str, Any]) -> Any:
+    result = run_ai(
+        instructions=(
+            "Create a practical meal plan. Return JSON only with keys: summary, days, "
+            "and notes. Each day must contain meals; each meal must include name, ingredients, "
+            "estimated_calories, and estimated_protein_g. Respect allergies and dietary limits. "
+            "Use simple ingredient names that can be mapped to USDA foods where possible. "
+            "Estimates must be clearly identified as estimates."
+        ),
+        user_input=json.dumps(prompt),
+    )
+    return safe_enrich_meal_plan(parse_json_response(result))
+
+
+def generate_shopping_list_data(meal_plan: Any, servings: int) -> Any:
+    result = run_ai(
+        instructions=(
+            "Convert the supplied meal plan into a consolidated grocery shopping list. "
+            "Return JSON only with keys: servings, categories, and notes. Group items by "
+            "produce, proteins, dairy_or_alternatives, pantry, frozen, and other. Merge duplicates "
+            "and provide practical estimated quantities."
+        ),
+        user_input=json.dumps({"meal_plan": meal_plan, "servings": servings}),
+    )
+    return parse_json_response(result)
+
+
 @app.get("/")
 def root() -> dict[str, str]:
     return {"status": "ok", "project": "Food Safety AI Agent"}
@@ -154,17 +183,14 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 @app.post("/copilot/chat")
 def context_chat(request: ContextChatRequest) -> dict[str, Any]:
-    intent = detect_intent(request.message)
-    context_prompt = build_context_prompt(request.message, request.context)
-    answer = run_ai(
-        instructions=(
-            "You are Guiltless AI, a context-aware nutrition copilot inside a food scoring and shopping app. "
-            "Use the supplied product, user goal, bag, and preference context. Prefer actionable next steps such as explain, compare, swap, meal-plan, or add-to-bag. "
-            "Do not invent medical claims; keep recommendations practical and transparent."
-        ),
-        user_input=context_prompt,
+    router = CopilotRouter(
+        ai_runner=run_ai if os.getenv("OPENAI_API_KEY") else None,
+        meal_plan_tool=generate_meal_plan_data,
+        shopping_list_tool=generate_shopping_list_data,
     )
-    return {"intent": intent, "response": answer, "context_used": request.context}
+    result = router.route(request.message, request.context)
+    result["context_used"] = request.context
+    return result
 
 
 @app.post("/meal-plan")
@@ -177,34 +203,12 @@ def create_meal_plan(request: MealPlanRequest) -> Any:
         "calorie_target": request.calorie_target,
         "meals_per_day": request.meals_per_day,
     }
-    result = run_ai(
-        instructions=(
-            "Create a practical meal plan. Return JSON only with keys: summary, days, "
-            "and notes. Each day must contain meals; each meal must include name, ingredients, "
-            "estimated_calories, and estimated_protein_g. Respect allergies and dietary limits. "
-            "Use simple ingredient names that can be mapped to USDA foods where possible. "
-            "Estimates must be clearly identified as estimates."
-        ),
-        user_input=json.dumps(prompt),
-    )
-    meal_plan = parse_json_response(result)
-    return safe_enrich_meal_plan(meal_plan)
+    return generate_meal_plan_data(prompt)
 
 
 @app.post("/shopping-list")
 def create_shopping_list(request: ShoppingListRequest) -> Any:
-    result = run_ai(
-        instructions=(
-            "Convert the supplied meal plan into a consolidated grocery shopping list. "
-            "Return JSON only with keys: servings, categories, and notes. Group items by "
-            "produce, proteins, dairy_or_alternatives, pantry, frozen, and other. Merge duplicates "
-            "and provide practical estimated quantities."
-        ),
-        user_input=json.dumps(
-            {"meal_plan": request.meal_plan, "servings": request.servings}
-        ),
-    )
-    return parse_json_response(result)
+    return generate_shopping_list_data(request.meal_plan, request.servings)
 
 
 @app.post("/product/explain")
