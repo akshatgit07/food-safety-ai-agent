@@ -175,22 +175,37 @@ export default function Home() {
   }
 
   return (
-    <main style={styles.page}>
-      <section style={styles.shell}>
-        <header style={styles.header}>
-          <div>
-            <p style={styles.eyebrow}>Guiltless AI Prototype</p>
-            <h1 style={styles.h1}>Nutrition Copilot</h1>
-            <p style={styles.subtitle}>Chat, generate meal plans, ground nutrition with USDA data, and build grocery lists.</p>
-          </div>
-          <div style={styles.statusPill}>
-            <span style={{ ...styles.dot, background: connected ? '#22c55e' : '#f59e0b' }} />
-            {statusText}
-          </div>
+    <main className="app-root">
+      <aside className="app-sidebar">
+        <a className="app-brand" href="#decision" aria-label="Guiltless home"><span>G</span><strong>Guiltless</strong></a>
+        <nav className="app-nav" aria-label="Primary navigation">
+          <a className="active" href="#decision"><span>⌁</span>Decision engine</a>
+          <a href="#workspace"><span>✦</span>AI workspace</a>
+          <a href="#meal-plan"><span>◫</span>Meal plan</a>
+          <a href="#shopping-list"><span>✓</span>Shopping list</a>
+        </nav>
+        <div className="sidebar-status">
+          <span className={connected ? 'status-dot connected' : 'status-dot'} />
+          <div><strong>{connected ? 'Backend online' : 'Connecting'}</strong><small>{statusText}</small></div>
+        </div>
+      </aside>
+
+      <section className="app-canvas">
+        <header className="app-topbar">
+          <div className="mobile-brand"><span>G</span><strong>Guiltless</strong></div>
+          <div><p>Nutrition intelligence</p><strong>Good afternoon</strong></div>
+          <div className="topbar-actions"><span className="live-pill"><i />Live demo</span><a href="#decision">Scan a label <b>→</b></a></div>
         </header>
 
         {error && <div style={styles.error}>{error}</div>}
 
+        <ProductIntelligence apiUrl={apiUrl} mealPlan={mealPlan} />
+
+        <section id="workspace" className="support-workspace">
+          <div className="support-heading">
+            <div><p style={styles.eyebrow}>AI workspace</p><h2 style={styles.h2}>Plan the rest of your day</h2></div>
+            <p style={styles.muted}>Use the same nutrition context for quick questions, meal planning, and your grocery list.</p>
+          </div>
         <section style={styles.grid}>
           <div style={styles.card}>
             <div style={styles.cardHeader}>
@@ -238,11 +253,10 @@ export default function Home() {
             </div>
           </div>
         </section>
-
-        <ProductIntelligence apiUrl={apiUrl} mealPlan={mealPlan} />
+        </section>
 
         {mealPlan && (
-          <section style={styles.section}>
+          <section id="meal-plan" style={styles.section}>
             <div style={styles.sectionHeader}>
               <div>
                 <h2 style={styles.h2}>Your Meal Plan</h2>
@@ -294,7 +308,7 @@ export default function Home() {
         )}
 
         {shoppingList && (
-          <section style={styles.section}>
+          <section id="shopping-list" style={styles.section}>
             <div style={styles.sectionHeader}>
               <div>
                 <h2 style={styles.h2}>Shopping List</h2>
