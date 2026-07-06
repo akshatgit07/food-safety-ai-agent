@@ -58,6 +58,36 @@ class CopilotRouterTests(unittest.TestCase):
         self.assertEqual(self.meal_requests[0]["days"], 5)
         self.assertEqual(result["tool_result"]["summary"], "Five-day high-protein plan")
 
+    def test_routes_workout_plan(self):
+        result = self.router.route(
+            "Build me a 4 day workout plan",
+            {"goal": "muscle gain", "equipment": ["dumbbells", "gym"], "experience_level": "beginner"},
+        )
+
+        self.assertEqual(result["intent"], "workout_plan")
+        self.assertEqual(len(result["tool_result"]["weekly_split"]), 4)
+        self.assertIn("build_meal_plan", result["suggested_actions"])
+
+    def test_routes_trainer_client_plan(self):
+        result = self.router.route(
+            "Create a trainer client plan",
+            {"client_name": "Demo Client", "goal": "fat loss", "days_per_week": 4, "equipment": ["gym"]},
+        )
+
+        self.assertEqual(result["intent"], "client_plan")
+        self.assertEqual(result["tool_result"]["client_name"], "Demo Client")
+        self.assertIn("create_client_plan", result["suggested_actions"])
+
+    def test_routes_checkout_preparation(self):
+        result = self.router.route(
+            "Prepare checkout",
+            {"shopping_list": {"categories": {"produce": [{"name": "berries", "quantity": "1 box"}]}}},
+        )
+
+        self.assertEqual(result["intent"], "prepare_checkout")
+        self.assertEqual(result["tool_result"]["item_count"], 1)
+        self.assertEqual(result["tool_result"]["status"], "prepared")
+
     def test_routes_shopping_list(self):
         result = self.router.route(
             "Make a shopping list",

@@ -5,6 +5,12 @@ from typing import Any
 
 def detect_intent(message: str) -> str:
     text = message.lower()
+    if any(phrase in text for phrase in ["prepare checkout", "checkout", "buy this list", "send to retailer"]):
+        return "prepare_checkout"
+    if any(phrase in text for phrase in ["client plan", "trainer plan", "coach plan", "plan for my client", "trainer client"]):
+        return "client_plan"
+    if any(phrase in text for phrase in ["workout plan", "training plan", "exercise plan", "gym plan", "weekly split"]):
+        return "workout_plan"
     if any(phrase in text for phrase in ["shopping list", "grocery list", "groceries", "what should i buy"]):
         return "shopping_list"
     if any(word in text for word in ["compare", "versus", " vs ", "better product"]):

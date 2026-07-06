@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
 
 type Product = {
   name: string;
@@ -57,6 +57,10 @@ function safeJson(value: unknown): string {
   }
 }
 
+function actionLabel(value: string): string {
+  return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 function ProductOption({ product }: { product: Product }) {
   return (
     <>
@@ -67,6 +71,14 @@ function ProductOption({ product }: { product: Product }) {
 
 export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: string; mealPlan?: JsonObject | null }) {
   const [goal, setGoal] = useState('high protein');
+  const [scannedProduct, setScannedProduct] = useState<Product | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanText, setScanText] = useState('Protein Oat Bar\nGood Foods\nCalories 190\nProtein 10g\nDietary Fiber 6g\nTotal Sugars 5g\nSodium 180mg\nIngredients: oats, almonds, dates');
+  const [scanImage, setScanImage] = useState<string | null>(null);
+  const [scanFileName, setScanFileName] = useState<string | null>(null);
+  const [scanResult, setScanResult] = useState<JsonObject | null>(null);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
 
   const [explainIndex, setExplainIndex] = useState(1);
   const [explainResult, setExplainResult] = useState<JsonObject | null>(null);
@@ -89,7 +101,8 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
   const [copilotLoading, setCopilotLoading] = useState(false);
   const [copilotError, setCopilotError] = useState<string | null>(null);
 
-  const currentProduct = DEMO_PRODUCTS[explainIndex];
+  const products = useMemo(() => scannedProduct ? [...DEMO_PRODUCTS, scannedProduct] : DEMO_PRODUCTS, [scannedProduct]);
+  const currentProduct = products[explainIndex] ?? DEMO_PRODUCTS[1];
   const currentProductScore = explainResult?.score;
   const mainSwap = (bagResult?.swaps ?? [])[0] as JsonObject | undefined;
 
@@ -109,12 +122,56 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     return payload;
   }
 
+  function handleScanFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setScanError(null);
+    setScanResult(null);
+    if (file.size > 4_000_000) {
+      setScanError('Choose an image smaller than 4 MB.');
+      event.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setScanImage(typeof reader.result === 'string' ? reader.result : null);
+      setScanFileName(file.name);
+    };
+    reader.onerror = () => setScanError('The label image could not be read.');
+    reader.readAsDataURL(file);
+  }
+
+  async function scanProductLabel() {
+    setScanLoading(true);
+    setScanError(null);
+    setScanResult(null);
+    try {
+      const payload = await post('/product/scan', { label_text: scanText.trim() || null, image_data_url: scanImage });
+      const product = payload.product as Product | undefined;
+      if (!product?.name || !product.nutrition) throw new Error('The scan did not return a usable product.');
+      setScannedProduct(product);
+      const scannedIndex = DEMO_PRODUCTS.length;
+      setExplainIndex(scannedIndex);
+      setExplainResult(null);
+      setCompareIndexes([scannedIndex, 2]);
+      setCompareResult(null);
+      setBagIndexes((current) => current.includes(scannedIndex) ? current : [...current, scannedIndex]);
+      setBagResult(null);
+      setCopilotResult(null);
+      setScanResult(payload);
+    } catch (error) {
+      setScanError(errorMessage(error));
+    } finally {
+      setScanLoading(false);
+    }
+  }
+
   async function explainProduct() {
     setExplainLoading(true);
     setExplainError(null);
     setExplainResult(null);
     try {
-      setExplainResult(await post('/product/explain', { product: DEMO_PRODUCTS[explainIndex], goal }));
+      setExplainResult(await post('/product/explain', { product: products[explainIndex], goal }));
     } catch (error) {
       setExplainError(errorMessage(error));
     } finally {
@@ -137,7 +194,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     try {
       if (compareIndexes[0] === compareIndexes[1]) throw new Error('Choose two different products to compare.');
       setCompareResult(await post('/product/compare', {
-        products: compareIndexes.map((index) => DEMO_PRODUCTS[index]),
+        products: compareIndexes.map((index) => products[index]),
         goal,
       }));
     } catch (error) {
@@ -156,7 +213,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
 
   function applySuggestedSwap() {
     if (!mainSwap) return;
-    const originalIndex = DEMO_PRODUCTS.findIndex((product) => product.name === mainSwap.replace);
+    const originalIndex = products.findIndex((product) => product.name === mainSwap.replace);
     if (originalIndex >= 0) setBagIndexes((current) => current.filter((index) => index !== originalIndex));
     setAppliedSwap(`${mainSwap.replace} → ${mainSwap.with}`);
   }
@@ -168,7 +225,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     try {
       if (bagIndexes.length === 0) throw new Error('Select at least one product for the bag.');
       setBagResult(await post('/bag/optimize', {
-        items: bagIndexes.map((index) => DEMO_PRODUCTS[index]),
+        items: bagIndexes.map((index) => products[index]).filter(Boolean),
         goal,
       }));
     } catch (error) {
@@ -187,11 +244,13 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
       if (!copilotMessage.trim()) throw new Error('Enter a question for the copilot.');
       setCopilotResult(await post('/copilot/chat', {
         message: copilotMessage.trim(),
+        user_id: 'demo-user',
+        load_memory: true,
         context: {
           goal,
           product: currentProduct,
-          products: DEMO_PRODUCTS,
-          bag: bagIndexes.map((index) => DEMO_PRODUCTS[index]),
+          products,
+          bag: bagIndexes.map((index) => products[index]).filter(Boolean),
           meal_plan: mealPlan,
           servings: 1,
           preferences: ['simple ingredients', 'higher protein'],
@@ -222,6 +281,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
             Shared nutrition goal
             <input style={styles.input} value={goal} onChange={(event) => setGoal(event.target.value)} />
           </label>
+          <button type="button" style={styles.heroScanButton} onClick={() => setScanOpen(true)}>▣ Scan or paste a label</button>
         </div>
         <aside className="decision-snapshot" style={styles.snapshot} aria-label="Current product nutrition snapshot">
           <div style={styles.snapshotHeader}>
@@ -247,6 +307,35 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
         ))}
       </div>
 
+      <section id="scan-label" className="scan-panel" style={styles.scanPanel}>
+        <div style={styles.scanPanelHeader}>
+          <div><span style={styles.scanKicker}>New · Scan-to-decision</span><h3 style={styles.scanTitle}>Bring a real food label into the workflow</h3><p style={styles.scanCopy}>Upload a photo or paste label text. Review the extraction, then use it everywhere below.</p></div>
+          <button type="button" style={styles.scanToggle} onClick={() => setScanOpen((current) => !current)}>{scanOpen ? 'Close scanner' : 'Scan a label'}</button>
+        </div>
+        {scanOpen && (
+          <div className="scan-grid" style={styles.scanGrid}>
+            <label style={styles.uploadZone}>
+              {scanImage ? <img src={scanImage} alt="Uploaded food label preview" style={styles.scanPreview} /> : <span style={styles.uploadIcon}>▣</span>}
+              <strong>{scanFileName ?? 'Upload or capture label'}</strong>
+              <small>JPG, PNG or WebP · maximum 4 MB</small>
+              <input type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={handleScanFile} style={styles.fileInput} />
+            </label>
+            <div style={styles.scanEditor}>
+              <label style={styles.scanTextLabel}>Label text <span>Editable before extraction</span></label>
+              <textarea rows={8} style={styles.scanTextarea} value={scanText} onChange={(event) => setScanText(event.target.value)} />
+              <button type="button" style={styles.primaryButton} onClick={scanProductLabel} disabled={scanLoading}>{scanLoading ? 'Reading nutrition label…' : 'Extract product and continue →'}</button>
+              <InlineError message={scanError} />
+            </div>
+            {scanResult && (
+              <div style={styles.scanSuccess}>
+                <span style={styles.scanSuccessIcon}>✓</span>
+                <div><strong>{scanResult.product?.name} is now active</strong><p>{Math.round(Number(scanResult.confidence ?? 0) * 100)}% extraction confidence · {String(scanResult.extraction_mode ?? 'scan').replaceAll('_', ' ')}</p>{(scanResult.warnings ?? []).map((warning: string) => <small key={warning}>{warning}</small>)}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
       <div className="decision-grid" style={styles.grid}>
         <article className="decision-card" style={styles.card}>
           <div style={styles.cardHeader}>
@@ -254,9 +343,9 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
             <div><h3 style={styles.cardTitle}>Product Explainability</h3><p style={styles.cardCopy}>See the score, strengths, cautions, and goal fit.</p></div>
           </div>
           <select style={styles.select} value={explainIndex} onChange={(event) => selectProduct(Number(event.target.value))}>
-            {DEMO_PRODUCTS.map((product, index) => <option key={product.name} value={index}>{product.name}</option>)}
+            {products.map((product, index) => <option key={`${product.name}-${index}`} value={index}>{product.name}</option>)}
           </select>
-          <ProductFacts product={DEMO_PRODUCTS[explainIndex]} />
+          <ProductFacts product={currentProduct} />
           <button type="button" style={styles.primaryButton} onClick={explainProduct} disabled={explainLoading}>{explainLoading ? 'Explaining…' : 'Explain this product'}</button>
           <InlineError message={explainError} />
           {explainResult && <ExplanationResult result={explainResult} onAction={setCopilotMessage} />}
@@ -281,12 +370,12 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
                 setCompareResult(null);
               }}
             >
-              {DEMO_PRODUCTS.map((product, index) => <option key={product.name} value={index}>{product.name}</option>)}
+              {products.map((product, index) => <option key={`${product.name}-${index}`} value={index}>{product.name}</option>)}
             </select>
           ))}
           <button type="button" style={styles.primaryButton} onClick={compareProducts} disabled={compareLoading}>{compareLoading ? 'Comparing…' : 'Compare products'}</button>
           <InlineError message={compareError} />
-          {compareResult && <ComparisonResult result={compareResult} products={DEMO_PRODUCTS} />}
+          {compareResult && <ComparisonResult result={compareResult} products={products} />}
         </article>
 
         <article className="decision-card" style={styles.card}>
@@ -295,8 +384,8 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
             <div><h3 style={styles.cardTitle}>Bag Optimization</h3><p style={styles.cardCopy}>Score a basket and preview practical healthier swaps.</p></div>
           </div>
           <div style={styles.checkList}>
-            {DEMO_PRODUCTS.map((product, index) => (
-              <label key={product.name} style={styles.checkRow}>
+            {products.map((product, index) => (
+              <label key={`${product.name}-${index}`} style={styles.checkRow}>
                 <input type="checkbox" checked={bagIndexes.includes(index)} onChange={() => toggleBagProduct(index)} />
                 <span><strong>{product.name}</strong><small style={styles.smallText}>{product.brand}</small></span>
               </label>
@@ -343,7 +432,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
             </div>
           </div>
           <div style={styles.promptChips}>
-            {['Why is this score low?', 'Compare alternatives', 'Add to breakfast plan', 'Optimize my bag'].map((prompt) => (
+            {['Explain score', 'Compare alternatives', 'Optimize bag', 'Build meal plan', 'Build workout plan', 'Trainer client plan'].map((prompt) => (
               <button key={prompt} type="button" style={styles.promptChip} onClick={() => setCopilotMessage(prompt)}>{prompt}</button>
             ))}
           </div>
@@ -362,7 +451,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
               {(copilotResult.suggested_actions ?? []).length > 0 && (
                 <div style={styles.actionChips}>
                   {(copilotResult.suggested_actions ?? []).map((action: string) => (
-                    <button key={action} type="button" style={styles.actionChip} onClick={() => setCopilotMessage(action)}>{action}</button>
+                    <button key={action} type="button" style={styles.actionChip} onClick={() => setCopilotMessage(actionLabel(action))}>{actionLabel(action)}</button>
                   ))}
                 </div>
               )}
@@ -485,10 +574,27 @@ const styles: Record<string, any> = {
   driverTrack: { overflow: 'hidden', height: 6, borderRadius: 999, background: '#1a5942' },
   driverValue: { display: 'block', height: '100%', borderRadius: 999 },
   snapshotAction: { alignSelf: 'flex-start', border: 0, borderRadius: 11, padding: '10px 12px', background: '#14573d', color: '#fff', cursor: 'pointer', fontWeight: 800, fontSize: 10 },
+  heroScanButton: { border: '1px solid #4d8069', borderRadius: 11, padding: '10px 13px', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 900 },
   workflow: { display: 'grid', gridTemplateColumns: 'repeat(5,minmax(0,1fr))', gap: 8, margin: '0 52px', transform: 'translateY(-18px)', border: '1px solid #e4eee7', borderRadius: 18, padding: 16, background: '#fff', boxShadow: '0 14px 30px rgba(9,56,38,.08)' },
   workflowItem: { position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 7, minWidth: 0, borderRadius: 11, padding: '9px 6px', color: '#576e63', fontSize: 12 },
   workflowNumber: { display: 'grid', placeItems: 'center', width: 22, height: 22, borderRadius: 999, background: '#bbf7d0', color: '#14532d', fontWeight: 900, fontSize: 10 },
   workflowArrow: { position: 'absolute', right: -8, color: '#6ee7b7', fontSize: 16 },
+  scanPanel: { margin: '0 28px 18px', border: '1px solid #c9e0d1', borderRadius: 18, padding: 18, background: '#fff' },
+  scanPanelHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 20 },
+  scanKicker: { color: '#0f6340', fontSize: 9, fontWeight: 900, letterSpacing: '.08em', textTransform: 'uppercase' },
+  scanTitle: { margin: '4px 0 0', color: '#09291c', fontSize: 17 },
+  scanCopy: { margin: '5px 0 0', color: '#64746b', fontSize: 12, lineHeight: 1.45 },
+  scanToggle: { flex: '0 0 auto', border: 0, borderRadius: 999, padding: '10px 14px', background: '#093826', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 900 },
+  scanGrid: { display: 'grid', gridTemplateColumns: '.75fr 1.25fr', gap: 16, marginTop: 16, borderTop: '1px solid #e2eadf', paddingTop: 16 },
+  uploadZone: { position: 'relative', display: 'flex', minHeight: 210, alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, overflow: 'hidden', border: '1.5px dashed #9fc9ae', borderRadius: 15, padding: 18, background: '#f5faf6', color: '#093826', textAlign: 'center', cursor: 'pointer' },
+  uploadIcon: { display: 'grid', placeItems: 'center', width: 44, height: 44, borderRadius: 13, background: '#e0f7e8', color: '#0f6340', fontSize: 22 },
+  scanPreview: { width: '100%', height: 120, borderRadius: 10, objectFit: 'cover' },
+  fileInput: { position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' },
+  scanEditor: { display: 'flex', flexDirection: 'column', gap: 9 },
+  scanTextLabel: { display: 'flex', justifyContent: 'space-between', gap: 12, color: '#09291c', fontSize: 11, fontWeight: 900 },
+  scanTextarea: { width: '100%', boxSizing: 'border-box', border: '1px solid #c9e0d1', borderRadius: 12, padding: 12, background: '#fbfdfb', color: '#213a2f', resize: 'vertical', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5 },
+  scanSuccess: { gridColumn: '1 / -1', display: 'flex', gap: 11, alignItems: 'flex-start', borderRadius: 13, padding: 12, background: '#e8fceb', color: '#093826' },
+  scanSuccessIcon: { display: 'grid', placeItems: 'center', flex: '0 0 auto', width: 28, height: 28, borderRadius: 999, background: '#0f6340', color: '#fff', fontWeight: 900 },
   grid: { display: 'grid', gridTemplateColumns: 'minmax(260px,.9fr) minmax(380px,1.3fr) minmax(280px,.95fr)', gap: 18, padding: '18px 28px 42px' },
   centerColumn: { display: 'flex', flexDirection: 'column', gap: 18, minWidth: 0 },
   card: { display: 'flex', flexDirection: 'column', gap: 13, minWidth: 0, background: '#fff', color: '#12372a', border: '1px solid #e5ece7', borderRadius: 20, padding: 18, boxShadow: '0 12px 30px rgba(6,78,59,.08)' },

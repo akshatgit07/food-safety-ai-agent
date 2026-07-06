@@ -3,6 +3,8 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
 import ProductIntelligence from './components/ProductIntelligence';
+import Phase3Planning from './components/Phase3Planning';
+import Phase4ProductLayer from './components/Phase4ProductLayer';
 
 type Message = { role: 'user' | 'assistant'; text: string };
 type MealPlan = Record<string, any>;
@@ -49,6 +51,7 @@ export default function Home() {
   const [shoppingList, setShoppingList] = useState<ShoppingList | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
+  const [latestWorkoutPlan, setLatestWorkoutPlan] = useState<Record<string, any> | null>(null);
 
   useEffect(() => {
     async function checkHealth() {
@@ -181,6 +184,8 @@ export default function Home() {
         <nav className="app-nav" aria-label="Primary navigation">
           <a className="active" href="#decision"><span>⌁</span>Decision engine</a>
           <a href="#workspace"><span>✦</span>AI workspace</a>
+          <a href="#coach-mode"><span>↗</span>Coach mode</a>
+          <a href="#product-layer"><span>◉</span>Memory layer</a>
           <a href="#meal-plan"><span>◫</span>Meal plan</a>
           <a href="#shopping-list"><span>✓</span>Shopping list</a>
         </nav>
@@ -194,7 +199,7 @@ export default function Home() {
         <header className="app-topbar">
           <div className="mobile-brand"><span>G</span><strong>Guiltless</strong></div>
           <div><p>Nutrition intelligence</p><strong>Good afternoon</strong></div>
-          <div className="topbar-actions"><span className="live-pill"><i />Live demo</span><a href="#decision">Scan a label <b>→</b></a></div>
+          <div className="topbar-actions"><span className="live-pill"><i />Live demo</span><a href="#scan-label">Scan a label <b>→</b></a></div>
         </header>
 
         {error && <div style={styles.error}>{error}</div>}
@@ -254,6 +259,10 @@ export default function Home() {
           </div>
         </section>
         </section>
+
+        <Phase3Planning apiUrl={apiUrl} shoppingList={shoppingList} onWorkoutPlan={setLatestWorkoutPlan} />
+
+        <Phase4ProductLayer apiUrl={apiUrl} latestMealPlan={mealPlan} latestWorkoutPlan={latestWorkoutPlan} />
 
         {mealPlan && (
           <section id="meal-plan" style={styles.section}>

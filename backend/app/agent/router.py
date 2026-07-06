@@ -4,8 +4,12 @@ import re
 from typing import Any, Callable, Optional
 
 from app.services.bag_optimizer import optimize_bag
+from app.services.action_recommender import recommend_actions
+from app.services.coach_planner import build_client_plan
+from app.services.commerce import prepare_checkout
 from app.services.copilot_router import build_context_prompt, detect_intent
 from app.services.product_intelligence import compare_products, explain_product
+from app.services.workout_planner import build_workout_plan
 
 AiRunner = Callable[[str, str], str]
 MealPlanTool = Callable[[dict[str, Any]], Any]
@@ -33,7 +37,7 @@ class CopilotRouter:
             return {
                 "intent": intent,
                 "response": result["response"],
-                "suggested_actions": result.get("suggested_actions", []),
+                "suggested_actions": recommend_actions(context, intent),
                 "tool_result": result.get("tool_result"),
                 "mode": result.get("mode", "tool"),
             }
@@ -45,7 +49,7 @@ class CopilotRouter:
             return {
                 "intent": "general_chat",
                 "response": fallback["response"],
-                "suggested_actions": fallback["suggested_actions"],
+                "suggested_actions": recommend_actions(context, "general_chat"),
                 "tool_result": None,
                 "mode": "routing_fallback",
             }
@@ -56,11 +60,59 @@ class CopilotRouter:
             "compare_products": self._compare_products,
             "optimize_bag": self._optimize_bag,
             "meal_plan": self._meal_plan,
+            "workout_plan": self._workout_plan,
+            "client_plan": self._client_plan,
+            "prepare_checkout": self._prepare_checkout,
             "shopping_list": self._shopping_list,
             "recipe": self._recipe,
             "general_chat": self._general_chat,
         }
         return handlers[intent](message, context)
+
+    def _prepare_checkout(self, message: str, context: dict[str, Any]) -> dict[str, Any]:
+        request = {
+            "client_id": context.get("client_id"),
+            "retailer": context.get("retailer", "preferred retailer"),
+            "shopping_list": context.get("shopping_list"),
+            "shopping_strategy": context.get("shopping_strategy"),
+            "items": context.get("items") or [],
+        }
+        result = prepare_checkout(request)
+        return {
+            "response": f"I prepared {result['item_count']} items for {result['retailer']} checkout.",
+            "tool_result": result,
+        }
+
+    def _workout_plan(self, message: str, context: dict[str, Any]) -> dict[str, Any]:
+        request = {
+            "goal": self._goal(context),
+            "days_per_week": self._as_int(context.get("days_per_week"), self._extract_days(message), 1, 7),
+            "equipment": context.get("equipment") or ["bodyweight"],
+            "experience_level": context.get("experience_level", "beginner"),
+            "limitations": context.get("limitations") or [],
+            "session_minutes": self._as_int(context.get("session_minutes"), 60, 20, 120),
+        }
+        result = build_workout_plan(request)
+        return {"response": result["summary"], "tool_result": result}
+
+    def _client_plan(self, message: str, context: dict[str, Any]) -> dict[str, Any]:
+        request = {
+            "client_name": context.get("client_name", "Demo Client"),
+            "goal": self._goal(context),
+            "diet": context.get("diet", "high protein"),
+            "allergies": context.get("allergies") or [],
+            "days_per_week": self._as_int(context.get("days_per_week"), self._extract_days(message), 1, 7),
+            "equipment": context.get("equipment") or ["gym"],
+            "calorie_target": self._as_int(context.get("calorie_target"), 2200, 800, 6000),
+            "experience_level": context.get("experience_level", "beginner"),
+            "limitations": context.get("limitations") or [],
+            "session_minutes": self._as_int(context.get("session_minutes"), 60, 20, 120),
+        }
+        result = build_client_plan(request)
+        return {
+            "response": f"I created a connected nutrition, workout, and shopping plan for {result['client_name']}.",
+            "tool_result": result,
+        }
 
     def _explain_product(self, message: str, context: dict[str, Any]) -> dict[str, Any]:
         product = context.get("product")
