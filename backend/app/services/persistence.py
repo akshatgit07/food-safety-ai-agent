@@ -153,10 +153,39 @@ def _client_dict(profile: CoachClient) -> dict[str, Any]:
     return {"id": profile.id, "client_name": profile.client_name, "goal": profile.goal, "diet": profile.diet, "allergies": _json(profile.allergies_json, []), "days_per_week": profile.days_per_week, "equipment": _json(profile.equipment_json, []), "calorie_target": profile.calorie_target, "created_at": profile.created_at.isoformat(), "updated_at": profile.updated_at.isoformat()}
 
 
+class ClientNotFound(ValueError):
+    """Raised when a caller references a coach client that they cannot address."""
+
+
+def _owned_client(session, client_id: str, owner_user_id: str) -> CoachClient | None:
+    """Look a client up *within the owner's scope*.
+
+    Resolving by primary key alone let any caller address — and overwrite — another
+    coach's client simply by supplying its id.
+    """
+    profile = session.get(CoachClient, client_id)
+    if profile is None or profile.owner_user_id != owner_user_id:
+        return None
+    return profile
+
+
 def create_or_update_client(payload: dict[str, Any], owner_user_id: str = DEMO_USER_ID) -> dict[str, Any]:
     ensure_user(owner_user_id)
+    client_id = payload.get("client_id")
     with session_scope() as session:
-        profile = session.get(CoachClient, payload.get("client_id")) if payload.get("client_id") else None
+        if client_id:
+            profile = _owned_client(session, str(client_id), owner_user_id)
+            if profile is None:
+                # Previously this silently created a *different* client and returned an
+                # id the caller never asked for. Fail loudly instead.
+                raise ClientNotFound("Client profile not found.")
+        else:
+            # Without this lookup every /coach/client-plan call created another row for
+            # the same person, filling the coach's roster with duplicates.
+            profile = session.query(CoachClient).filter(
+                CoachClient.owner_user_id == owner_user_id,
+                CoachClient.client_name == str(payload.get("client_name") or "Demo Client"),
+            ).order_by(CoachClient.created_at.asc()).first()
         if profile is None:
             profile = CoachClient(id=str(uuid.uuid4()), owner_user_id=owner_user_id, created_at=utc_now(), updated_at=utc_now())
             session.add(profile)
@@ -174,8 +203,9 @@ def create_or_update_client(payload: dict[str, Any], owner_user_id: str = DEMO_U
 
 
 def save_client_plan(request: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
-    profile = create_or_update_client(request, str(request.get("owner_user_id") or DEMO_USER_ID))
-    record = save_plan_for_client(profile["id"], plan)
+    owner_user_id = str(request.get("owner_user_id") or DEMO_USER_ID)
+    profile = create_or_update_client(request, owner_user_id)
+    record = save_plan_for_client(profile["id"], plan, owner_user_id)
     return {"profile_id": profile["id"], "plan_id": record["id"], "saved_at": record["created_at"]}
 
 
@@ -186,24 +216,26 @@ def list_clients(owner_user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:
         return [_client_dict(profile) for profile in profiles]
 
 
-def get_client(client_id: str) -> dict[str, Any] | None:
+def get_client(client_id: str, owner_user_id: str = DEMO_USER_ID) -> dict[str, Any] | None:
     with session_scope() as session:
-        profile = session.get(CoachClient, client_id)
+        profile = _owned_client(session, client_id, owner_user_id)
         return _client_dict(profile) if profile else None
 
 
-def save_plan_for_client(client_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+def save_plan_for_client(client_id: str, plan: dict[str, Any], owner_user_id: str = DEMO_USER_ID) -> dict[str, Any]:
     plan_id = str(uuid.uuid4())
     now = utc_now()
     with session_scope() as session:
-        if session.get(CoachClient, client_id) is None:
-            raise ValueError("Client profile not found.")
+        if _owned_client(session, client_id, owner_user_id) is None:
+            raise ClientNotFound("Client profile not found.")
         session.add(ClientPlanRecord(id=plan_id, client_id=client_id, payload_json=json.dumps(plan), created_at=now))
     return {"id": plan_id, "client_id": client_id, "plan": plan, "created_at": now.isoformat()}
 
 
-def get_client_plans(client_id: str) -> list[dict[str, Any]]:
+def get_client_plans(client_id: str, owner_user_id: str = DEMO_USER_ID) -> list[dict[str, Any]]:
     with session_scope() as session:
+        if _owned_client(session, client_id, owner_user_id) is None:
+            raise ClientNotFound("Client profile not found.")
         records = session.query(ClientPlanRecord).filter(ClientPlanRecord.client_id == client_id).order_by(ClientPlanRecord.created_at.desc()).all()
         return [{"id": row.id, "client_id": row.client_id, "plan": _json(row.payload_json, {}), "created_at": row.created_at.isoformat()} for row in records]
 
@@ -216,9 +248,18 @@ def save_copilot_message(user_id: str, role: str, content: str, intent: str | No
     return message_id
 
 
+def client_exists(client_id: str, owner_user_id: str = DEMO_USER_ID) -> bool:
+    with session_scope() as session:
+        return _owned_client(session, client_id, owner_user_id) is not None
+
+
 def save_checkout(*, client_id: str | None, retailer: str, status: str, items: list[dict[str, Any]], checkout_url: str | None, checkout_id: str | None = None, user_id: str | None = None, provider: str = "generic") -> dict[str, Any]:
     if user_id:
         ensure_user(user_id)
+    if client_id and not client_exists(client_id):
+        # checkout_sessions.client_id is a foreign key: SQLite silently accepted a
+        # dangling id, Postgres raised IntegrityError and returned a 500.
+        raise ClientNotFound("Client profile not found.")
     record_id = checkout_id or str(uuid.uuid4())
     now = utc_now()
     with session_scope() as session:

@@ -4,6 +4,13 @@ from typing import Any
 
 from app.services.workout_planner import build_workout_plan
 
+NUTRITION_GUIDANCE_NOTE = (
+    "General nutrition guidance only - not medical or dietetic advice, and not a treatment "
+    "plan. Calorie and protein figures are starting estimates to adjust from. Refer clients "
+    "with medical conditions, disordered-eating history, pregnancy, or who are under 18 to a "
+    "registered dietitian or physician."
+)
+
 
 def build_client_plan(request: dict[str, Any]) -> dict[str, Any]:
     client_name = str(request.get("client_name") or "Client")
@@ -32,6 +39,7 @@ def build_client_plan(request: dict[str, Any]) -> dict[str, Any]:
             "meal_structure": ["Protein-centered breakfast", "Balanced lunch", "Training-aware snack", "Vegetable-forward dinner"],
             "diet": diet,
             "allergy_guidance": allergy_note,
+            "guidance_disclaimer": NUTRITION_GUIDANCE_NOTE,
         },
         "workout_plan": workout_plan,
         "shopping_strategy": {

@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { requestJson } from '../lib/api';
+
 type JsonObject = Record<string, any>;
 type Tab = 'profile' | 'bag' | 'plans' | 'clients';
 
@@ -9,11 +11,6 @@ const DEMO_ITEM = {
   name: 'Roasted Chickpea Bites', brand: 'Good Crunch', category: 'Savory snack',
   nutrition: { calories: 180, protein_g: 9, fiber_g: 6, sugar_g: 2, sodium_mg: 220 }, ingredients: ['chickpeas', 'olive oil', 'spices'],
 };
-
-async function readJson(response: Response) {
-  const text = await response.text();
-  try { return text ? JSON.parse(text) : {}; } catch { return { detail: text || 'Non-JSON response' }; }
-}
 
 function csv(value: string) { return value.split(',').map((item) => item.trim()).filter(Boolean); }
 
@@ -31,27 +28,26 @@ export default function Phase4ProductLayer({ apiUrl, latestMealPlan, latestWorko
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   async function request(path: string, options?: RequestInit) {
-    if (!apiUrl) throw new Error('NEXT_PUBLIC_API_URL is not configured.');
-    const response = await fetch(`${apiUrl.replace(/\/$/, '')}${path}`, { headers: { 'Content-Type': 'application/json' }, ...options });
-    const payload = await readJson(response);
-    if (!response.ok) throw new Error(payload.detail || `Backend returned ${response.status}`);
-    return payload;
+    return requestJson(apiUrl, path, options);
   }
 
   async function refreshAll() {
     if (!apiUrl) return;
+    setLoading(true);
     try {
       const [profilePayload, bagPayload, planPayload, clientPayload] = await Promise.all([
         request('/profile/demo-user'), request('/bag/demo-user'), request('/plans/demo-user'), request('/coach/clients'),
       ]);
       setProfile({
-        goal: profilePayload.goal, diet: profilePayload.diet, allergies: (profilePayload.allergies ?? []).join(', '), disliked_foods: (profilePayload.disliked_foods ?? []).join(', '),
-        budget: profilePayload.budget, preferred_store: profilePayload.preferred_store, training_days: profilePayload.training_days, equipment: (profilePayload.equipment ?? []).join(', '), calorie_target: profilePayload.calorie_target,
+        goal: profilePayload.goal ?? '', diet: profilePayload.diet ?? '', allergies: (profilePayload.allergies ?? []).join(', '), disliked_foods: (profilePayload.disliked_foods ?? []).join(', '),
+        budget: profilePayload.budget ?? '', preferred_store: profilePayload.preferred_store ?? '', training_days: Number(profilePayload.training_days ?? 3), equipment: (profilePayload.equipment ?? []).join(', '), calorie_target: Number(profilePayload.calorie_target ?? 2200),
       });
       setBag(bagPayload.items ?? []); setPlans(planPayload); setClients(clientPayload.clients ?? []);
     } catch (loadError) { setError(loadError instanceof Error ? loadError.message : 'Unable to load saved product state'); }
+    finally { setLoading(false); }
   }
 
   useEffect(() => { refreshAll(); }, [apiUrl]);
@@ -110,11 +106,12 @@ export default function Phase4ProductLayer({ apiUrl, latestMealPlan, latestWorko
       <nav className="phase4-tabs" aria-label="Phase 4 product areas">
         {([['profile','Profile / Memory'],['bag','Persistent Bag'],['plans','Saved Plans'],['clients','Trainer Clients']] as [Tab,string][]).map(([value,label]) => <button key={value} className={tab === value ? 'active' : ''} onClick={() => setTab(value)}>{label}</button>)}
       </nav>
+      {loading && <div className="phase4-alert">Loading saved product state…</div>}
       {(notice || error) && <div className={error ? 'phase4-alert error' : 'phase4-alert'}>{error ?? notice}</div>}
 
       {tab === 'profile' && <div className="phase4-panel"><div className="phase4-panel-heading"><span>Shared memory</span><h3>Profile / Memory</h3><p>Preferences become reusable context for meal, workout, bag, and Copilot actions.</p></div><div className="phase4-form-grid">
         <label>Goal<input value={profile.goal} onChange={(e) => setProfile({ ...profile, goal: e.target.value })} /></label><label>Diet<input value={profile.diet} onChange={(e) => setProfile({ ...profile, diet: e.target.value })} /></label>
-        <label>Allergies<input value={profile.allergies} onChange={(e) => setProfile({ ...profile, allergies: e.target.value })} placeholder="comma separated" /></label><label>Calorie target<input type="number" value={profile.calorie_target} onChange={(e) => setProfile({ ...profile, calorie_target: Number(e.target.value) })} /></label>
+        <label>Allergies<input value={profile.allergies} onChange={(e) => setProfile({ ...profile, allergies: e.target.value })} placeholder="comma separated" /></label><label>Calorie target<input type="number" min={800} max={6000} step={50} value={profile.calorie_target} onChange={(e) => setProfile({ ...profile, calorie_target: Number(e.target.value) })} /></label>
         <label>Training days<input type="number" min={1} max={7} value={profile.training_days} onChange={(e) => setProfile({ ...profile, training_days: Number(e.target.value) })} /></label><label>Preferred store<input value={profile.preferred_store} onChange={(e) => setProfile({ ...profile, preferred_store: e.target.value })} /></label>
       </div><button className="phase4-primary" onClick={saveProfile} disabled={busy === 'profile'}>{busy === 'profile' ? 'Saving memory…' : 'Save profile memory'}</button></div>}
 

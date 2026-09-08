@@ -11,6 +11,12 @@ from app.services.copilot_router import build_context_prompt, detect_intent
 from app.services.product_intelligence import compare_products, explain_product
 from app.services.workout_planner import build_workout_plan
 
+# Errors that mean "this tool cannot run with the context supplied" — the graceful
+# deterministic fallback is the right answer for these. Anything else (an upstream
+# OpenAI outage surfacing as HTTPException, a programming error) must propagate so
+# the caller sees a real failure instead of a cheerful 200.
+TOOL_CONTEXT_ERRORS = (ValueError, RuntimeError, KeyError, TypeError, IndexError)
+
 AiRunner = Callable[[str, str], str]
 MealPlanTool = Callable[[dict[str, Any]], Any]
 ShoppingListTool = Callable[[Any, int], Any]
@@ -40,11 +46,13 @@ class CopilotRouter:
                 "suggested_actions": recommend_actions(context, intent),
                 "tool_result": result.get("tool_result"),
                 "mode": result.get("mode", "tool"),
+                "routing_error": None,
             }
-        except Exception:
+        except TOOL_CONTEXT_ERRORS as exc:
+            reason = f"{intent}: {exc}"
             try:
                 fallback = self._general_chat(message, context, routing_failed=True)
-            except Exception:
+            except TOOL_CONTEXT_ERRORS:
                 fallback = self._deterministic_chat(context, routing_failed=True)
             return {
                 "intent": "general_chat",
@@ -52,6 +60,8 @@ class CopilotRouter:
                 "suggested_actions": recommend_actions(context, "general_chat"),
                 "tool_result": None,
                 "mode": "routing_fallback",
+                # Surfaced so a fallback is debuggable instead of an anonymous shrug.
+                "routing_error": reason,
             }
 
     def _dispatch(self, intent: str, message: str, context: dict[str, Any]) -> dict[str, Any]:

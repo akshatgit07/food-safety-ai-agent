@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
+import { apiBase, errorMessage, readJson } from './lib/api';
 import ProductIntelligence from './components/ProductIntelligence';
 import Phase3Planning from './components/Phase3Planning';
 import Phase4ProductLayer from './components/Phase4ProductLayer';
@@ -61,7 +62,7 @@ export default function Home() {
       }
 
       try {
-        const response = await fetch(`${apiUrl}/health`);
+        const response = await fetch(`${apiBase(apiUrl)}/health`);
         if (!response.ok) throw new Error(`Backend returned ${response.status}`);
         setConnected(true);
         setStatusText('Connected to FastAPI on Render.');
@@ -81,15 +82,6 @@ export default function Home() {
     ? `${grounding.grounded_ingredients ?? 0}/${grounding.total_ingredients ?? 0} ingredients grounded • ${grounding.source ?? 'model estimate'}`
     : null;
 
-  async function readJson(response: Response) {
-    const text = await response.text();
-    try {
-      return text ? JSON.parse(text) : {};
-    } catch {
-      return { detail: text || 'Non-JSON response from backend' };
-    }
-  }
-
   async function submitChat(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!apiUrl || !input.trim() || isSending) return;
@@ -101,13 +93,13 @@ export default function Home() {
     setError(null);
 
     try {
-      const response = await fetch(`${apiUrl}/chat`, {
+      const response = await fetch(`${apiBase(apiUrl)}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: question }),
       });
       const payload = await readJson(response);
-      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      if (!response.ok) throw new Error(errorMessage(payload, response.status));
       setMessages((current) => [...current, { role: 'assistant', text: payload.response || 'No response returned.' }]);
     } catch (chatError) {
       const message = chatError instanceof Error ? chatError.message : 'Unable to call chat endpoint';
@@ -127,13 +119,13 @@ export default function Home() {
     setShoppingList(null);
 
     try {
-      const response = await fetch(`${apiUrl}/meal-plan`, {
+      const response = await fetch(`${apiBase(apiUrl)}/meal-plan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       });
       const payload = await readJson(response);
-      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      if (!response.ok) throw new Error(errorMessage(payload, response.status));
       setMealPlan(asObject(payload));
     } catch (planError) {
       setError(planError instanceof Error ? planError.message : 'Unable to generate meal plan');
@@ -149,13 +141,13 @@ export default function Home() {
     setError(null);
 
     try {
-      const response = await fetch(`${apiUrl}/shopping-list`, {
+      const response = await fetch(`${apiBase(apiUrl)}/shopping-list`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ meal_plan: mealPlan, servings: 1 }),
       });
       const payload = await readJson(response);
-      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      if (!response.ok) throw new Error(errorMessage(payload, response.status));
       setShoppingList(asObject(payload));
     } catch (listError) {
       setError(listError instanceof Error ? listError.message : 'Unable to generate shopping list');
@@ -250,7 +242,7 @@ export default function Home() {
               <label style={styles.label}>Diet<input style={styles.input} value={form.diet} onChange={(e) => setForm({ ...form, diet: e.target.value })} /></label>
               <label style={styles.label}>Days<input style={styles.input} type="number" min={1} max={7} value={form.days} onChange={(e) => setForm({ ...form, days: Number(e.target.value) })} /></label>
               <label style={styles.label}>Meals / day<input style={styles.input} type="number" min={1} max={6} value={form.meals_per_day} onChange={(e) => setForm({ ...form, meals_per_day: Number(e.target.value) })} /></label>
-              <label style={styles.label}>Calories<input style={styles.input} type="number" value={form.calorie_target} onChange={(e) => setForm({ ...form, calorie_target: Number(e.target.value) })} /></label>
+              <label style={styles.label}>Calories<input style={styles.input} type="number" min={800} max={6000} step={50} value={form.calorie_target} onChange={(e) => setForm({ ...form, calorie_target: Number(e.target.value) })} /></label>
             </div>
             <div style={styles.actions}>
               <button type="button" onClick={generateMealPlan} style={styles.primaryButton} disabled={loadingPlan}>{loadingPlan ? 'Generating…' : 'Generate meal plan'}</button>

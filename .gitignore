@@ -8,3 +8,4 @@ logs/
 chroma_db/
 node_modules/
 .next/
+*.tsbuildinfo

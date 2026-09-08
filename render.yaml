@@ -1,0 +1,29 @@
+# Render blueprint.
+#
+# rootDir MUST stay `backend`. The repo also carries a top-level app/main.py stub
+# that exposes only / and /health, so a service rooted at the repo root boots
+# cleanly, passes its health check, and serves none of the real API. If this
+# service was created by hand in the Render dashboard rather than from this
+# blueprint, confirm its Root Directory is set to `backend`.
+services:
+  - type: web
+    name: food-safety-ai-agent-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: USDA_API_KEY
+        sync: false
+      # Without DATABASE_URL the backend falls back to SQLite under /tmp, which
+      # Render wipes on every deploy and restart. Set a Postgres URL for anything
+      # that needs to survive a redeploy.
+      - key: DATABASE_URL
+        sync: false
+      # Comma-separated Vercel origins. Defaults to "*" when unset.
+      - key: ALLOWED_ORIGINS
+        sync: false

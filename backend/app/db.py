@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterator
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, create_engine, event
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 
 Base = declarative_base()
 _engine = None
 _session_factory = None
+_init_lock = threading.Lock()
 
 
 def utc_now() -> datetime:
@@ -25,15 +27,35 @@ def database_url() -> str:
     return url
 
 
+def _enable_sqlite_foreign_keys(engine) -> None:
+    """SQLite ignores foreign keys unless asked, which hides referential bugs that
+    only surface on the Postgres deployment. Enforce them in every environment."""
+
+    @event.listens_for(engine, "connect")
+    def _set_pragma(dbapi_connection, _connection_record):  # pragma: no cover - driver hook
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
 def init_db() -> None:
+    """Initialise the engine exactly once, even under concurrent first requests."""
     global _engine, _session_factory
-    if _engine is not None:
+    if _session_factory is not None:
         return
-    url = database_url()
-    engine_kwargs = {"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {"pool_pre_ping": True}
-    _engine = create_engine(url, **engine_kwargs)
-    Base.metadata.create_all(_engine)
-    _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
+    with _init_lock:
+        if _session_factory is not None:
+            return
+        url = database_url()
+        engine_kwargs = {"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {"pool_pre_ping": True}
+        engine = create_engine(url, **engine_kwargs)
+        if url.startswith("sqlite"):
+            _enable_sqlite_foreign_keys(engine)
+        Base.metadata.create_all(engine)
+        # Publish the factory before the engine so no thread can observe a
+        # non-None _engine with a still-unset _session_factory.
+        _session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+        _engine = engine
 
 
 @contextmanager

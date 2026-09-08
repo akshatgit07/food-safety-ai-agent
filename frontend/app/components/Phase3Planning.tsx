@@ -2,16 +2,13 @@
 
 import { useEffect, useState } from 'react';
 
+import { requestJson } from '../lib/api';
+
 type JsonObject = Record<string, any>;
 type Mode = 'consumer' | 'trainer';
 
 function list(value: string) {
   return value.split(',').map((item) => item.trim()).filter(Boolean);
-}
-
-async function readJson(response: Response) {
-  const text = await response.text();
-  try { return text ? JSON.parse(text) : {}; } catch { return { detail: text || 'Non-JSON response from backend' }; }
 }
 
 export default function Phase3Planning({ apiUrl, shoppingList, onWorkoutPlan }: { apiUrl?: string; shoppingList?: JsonObject | null; onWorkoutPlan?: (plan: JsonObject) => void }) {
@@ -25,6 +22,8 @@ export default function Phase3Planning({ apiUrl, shoppingList, onWorkoutPlan }: 
   const [workoutError, setWorkoutError] = useState<string | null>(null);
   const [coachError, setCoachError] = useState<string | null>(null);
   const [clients, setClients] = useState<JsonObject[]>([]);
+  const [clientsLoading, setClientsLoading] = useState(false);
+  const [clientsError, setClientsError] = useState<string | null>(null);
   const [selectedClientId, setSelectedClientId] = useState('');
   const [checkoutResult, setCheckoutResult] = useState<JsonObject | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
@@ -32,15 +31,17 @@ export default function Phase3Planning({ apiUrl, shoppingList, onWorkoutPlan }: 
 
   useEffect(() => {
     if (!apiUrl) return;
-    fetch(`${apiUrl.replace(/\/$/, '')}/coach/clients`).then(readJson).then((payload) => setClients(Array.isArray(payload.clients) ? payload.clients : [])).catch(() => undefined);
+    let cancelled = false;
+    setClientsLoading(true);
+    requestJson(apiUrl, '/coach/clients')
+      .then((payload) => { if (!cancelled) setClients(Array.isArray(payload.clients) ? payload.clients : []); })
+      .catch((loadError) => { if (!cancelled) setClientsError(loadError instanceof Error ? loadError.message : 'Unable to load saved clients'); })
+      .finally(() => { if (!cancelled) setClientsLoading(false); });
+    return () => { cancelled = true; };
   }, [apiUrl]);
 
   async function post(path: string, body: JsonObject) {
-    if (!apiUrl) throw new Error('NEXT_PUBLIC_API_URL is not configured.');
-    const response = await fetch(`${apiUrl.replace(/\/$/, '')}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const payload = await readJson(response);
-    if (!response.ok) throw new Error(payload.detail || `Backend returned ${response.status}`);
-    return payload;
+    return requestJson(apiUrl, path, { method: 'POST', body: JSON.stringify(body) });
   }
 
   async function generateWorkout() {
@@ -59,7 +60,7 @@ export default function Phase3Planning({ apiUrl, shoppingList, onWorkoutPlan }: 
       const result = await post('/coach/client-plan', { ...coachForm, client_id: selectedClientId || null, equipment: list(coachForm.equipment), allergies: [] });
       setCoachResult(result);
       setSelectedClientId(result.persistence?.profile_id ?? '');
-      const clientPayload = await fetch(`${apiUrl?.replace(/\/$/, '')}/coach/clients`).then(readJson);
+      const clientPayload = await requestJson(apiUrl, '/coach/clients');
       setClients(Array.isArray(clientPayload.clients) ? clientPayload.clients : []);
     } catch (error) { setCoachError(error instanceof Error ? error.message : 'Unable to generate client plan'); }
     finally { setCoachLoading(false); }
@@ -122,14 +123,14 @@ export default function Phase3Planning({ apiUrl, shoppingList, onWorkoutPlan }: 
         <div className="coach-layout">
           <article className="planner-form-card coach-form-card">
             <div className="planner-card-heading"><span>B2B trainer action</span><h3>Create connected client plan</h3><p>Generate the nutrition, training, and shopping foundation in one action.</p></div>
-            <label className="saved-client-picker">Saved client<select value={selectedClientId} onChange={(e) => loadClient(e.target.value)}><option value="">New client</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.client_name} · {client.goal}</option>)}</select><small>{clients.length} persisted client{clients.length === 1 ? '' : 's'}</small></label>
+            <label className="saved-client-picker">Saved client<select value={selectedClientId} onChange={(e) => loadClient(e.target.value)}><option value="">New client</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.client_name} · {client.goal}</option>)}</select><small>{clientsLoading ? 'Loading saved clients…' : clientsError ?? `${clients.length} persisted client${clients.length === 1 ? '' : 's'}`}</small></label>
             <div className="planner-form-grid">
               <label>Client name<input value={coachForm.client_name} onChange={(e) => setCoachForm({ ...coachForm, client_name: e.target.value })} /></label>
               <label>Client goal<input value={coachForm.goal} onChange={(e) => setCoachForm({ ...coachForm, goal: e.target.value })} /></label>
               <label>Diet preference<input value={coachForm.diet} onChange={(e) => setCoachForm({ ...coachForm, diet: e.target.value })} /></label>
               <label>Training days<input type="number" min={1} max={7} value={coachForm.days_per_week} onChange={(e) => setCoachForm({ ...coachForm, days_per_week: Number(e.target.value) })} /></label>
               <label>Equipment<input value={coachForm.equipment} onChange={(e) => setCoachForm({ ...coachForm, equipment: e.target.value })} /></label>
-              <label>Calorie target<input type="number" value={coachForm.calorie_target} onChange={(e) => setCoachForm({ ...coachForm, calorie_target: Number(e.target.value) })} /></label>
+              <label>Calorie target<input type="number" min={800} max={6000} step={50} value={coachForm.calorie_target} onChange={(e) => setCoachForm({ ...coachForm, calorie_target: Number(e.target.value) })} /></label>
             </div>
             <button className="planner-primary" onClick={generateClientPlan} disabled={coachLoading}>{coachLoading ? 'Building client plan…' : 'Generate client plan'}</button>
             {coachError && <div className="planner-error">{coachError}</div>}

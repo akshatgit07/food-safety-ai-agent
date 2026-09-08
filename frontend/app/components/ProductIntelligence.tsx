@@ -2,6 +2,8 @@
 
 import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
 
+import { errorMessage as detailMessage } from '../lib/api';
+
 type Product = {
   name: string;
   brand: string;
@@ -118,7 +120,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
       body: JSON.stringify(body),
     });
     const payload = await readJson(response);
-    if (!response.ok) throw new Error(payload.detail || `Backend returned ${response.status}.`);
+    if (!response.ok) throw new Error(detailMessage(payload, response.status));
     return payload;
   }
 

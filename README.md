@@ -1,21 +1,30 @@
 # Food Safety AI Agent
 
-Production-grade Nutrition Intelligence Platform.
+Agentic nutrition intelligence layer for Guiltless.
 
-## Features
-- FastAPI backend
-- LangGraph multi-agent workflow
-- USDA FoodData Central ingestion
-- RAG retrieval pipeline
-- Ingredient risk scoring
-- Explainable product comparison and bag optimization
-- LLM reasoning + critic agent
-- Next.js frontend
-- PostgreSQL support
-- Docker deployment
+## Built today
+- FastAPI backend (`backend/`) deployed to Render
+- Next.js frontend (`frontend/`) deployed to Vercel
+- Deterministic product scoring, comparison, and bag optimization (no LLM required)
+- Label scanning from pasted text; OpenAI vision when `OPENAI_API_KEY` is set
+- Keyword intent router (`backend/app/agent/`) calling internal tools directly
+- Deterministic workout and trainer client planning
+- OpenAI-backed nutrition chat, meal plans, and shopping lists
+- USDA FoodData Central lookups with a local fallback table
+- SQLAlchemy persistence: profile, bag, plans, trainer clients, checkout sessions
+- Mock retailer/Instacart checkout handoff
+
+## Not built yet
+These are on the roadmap and are **not** in the codebase today. Do not read them as
+shipped capability:
+- LangGraph multi-agent workflow (the router is keyword-based, not agentic planning)
+- RAG retrieval pipeline / ChromaDB vector store
+- Critic-agent review loop
+- Real retailer checkout (the Instacart handoff returns a mock URL)
+- Authentication (every endpoint is unauthenticated and shares one demo user)
 
 ## Architecture
-Ingestion Agent -> Retrieval Agent -> Reasoning Agent -> Critic Agent -> Finalizer
+Request -> intent router -> deterministic tool or OpenAI call -> SQLAlchemy persistence
 
 ## Product intelligence
 
@@ -115,5 +124,19 @@ cd frontend
 npm run build
 ```
 
-## Planned Stack
-FastAPI, LangGraph, OpenAI, ChromaDB, PostgreSQL, Next.js, Docker.
+## Deployment
+
+The backend must be deployed with **`backend/` as the service root** (see `render.yaml`).
+The repository also contains a legacy top-level `app/main.py` stub that exposes only
+`/` and `/health`; a service rooted at the repository root will boot and pass its
+health check while serving none of the real API.
+
+- Render: root directory `backend`, start command
+  `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, health check `/health`.
+- Vercel: root directory `frontend`, with `NEXT_PUBLIC_API_URL` set to the Render URL.
+- Without `DATABASE_URL` the backend falls back to SQLite under `/tmp`, which Render
+  wipes on every deploy. Set a Postgres URL for anything that must survive a redeploy.
+
+## Planned stack
+FastAPI, OpenAI, PostgreSQL, Next.js, Docker. LangGraph and ChromaDB are aspirational
+and not yet wired in.

@@ -16,6 +16,7 @@ from app.services.commerce import prepare_checkout, prepare_instacart_checkout
 from app.services.label_scanner import scan_label
 from app.services.persistence import (
     DEMO_USER_ID,
+    ClientNotFound,
     add_bag_item,
     clear_bag,
     create_or_update_client,
@@ -179,6 +180,228 @@ class InstacartCheckoutRequest(BaseModel):
     shopping_list: Optional[dict[str, Any]] = None
 
 
+# --- Response models ------------------------------------------------------
+# Declared field-for-field against the shapes these endpoints already returned, so
+# adding response_model documents the contract without dropping any existing key.
+
+
+class RootResponse(BaseModel):
+    status: str
+    project: str
+
+
+class HealthResponse(BaseModel):
+    healthy: bool
+
+
+class ExerciseModel(BaseModel):
+    name: str
+    sets: int
+    reps: str
+    notes: str
+
+
+class WorkoutDayModel(BaseModel):
+    day: int
+    focus: str
+    exercises: list[ExerciseModel]
+
+
+class WorkoutPlanResponse(BaseModel):
+    summary: str
+    weekly_split: list[WorkoutDayModel]
+    progression_notes: str
+    safety_notes: str
+    guidance_disclaimer: str
+
+
+class NutritionPlanModel(BaseModel):
+    summary: str
+    calorie_target: int
+    protein_target_g: int
+    meal_structure: list[str]
+    diet: str
+    allergy_guidance: str
+    guidance_disclaimer: str
+
+
+class StarterItemModel(BaseModel):
+    name: str
+    quantity: str
+    category: str
+
+
+class ShoppingStrategyModel(BaseModel):
+    summary: str
+    priority_categories: list[str]
+    weekly_prep: list[str]
+    starter_items: list[StarterItemModel]
+    checkout_action: str
+
+
+class PlanPersistenceModel(BaseModel):
+    profile_id: str
+    plan_id: str
+    saved_at: str
+
+
+class CoachClientPlanResponse(BaseModel):
+    client_name: str
+    goal: str
+    nutrition_plan: NutritionPlanModel
+    workout_plan: WorkoutPlanResponse
+    shopping_strategy: ShoppingStrategyModel
+    coach_notes: list[str]
+    persistence: PlanPersistenceModel
+
+
+class CheckoutItemModel(BaseModel):
+    name: str
+    quantity: str
+    category: str
+
+
+class CheckoutPrepareResponse(BaseModel):
+    checkout_id: str
+    user_id: Optional[str] = None
+    client_id: Optional[str] = None
+    checkout_provider: str
+    retailer: str
+    status: str
+    item_count: int
+    items: list[CheckoutItemModel]
+    checkout_url: Optional[str] = None
+    created_at: str
+    next_action: str
+
+
+class CheckoutSessionResponse(BaseModel):
+    checkout_id: str
+    user_id: Optional[str] = None
+    client_id: Optional[str] = None
+    checkout_provider: str
+    status: str
+    item_count: int
+    items: list[CheckoutItemModel]
+    checkout_url: Optional[str] = None
+    created_at: str
+
+
+class InstacartCheckoutResponse(BaseModel):
+    checkout_provider: str
+    status: str
+    checkout_url: str
+    items: list[CheckoutItemModel]
+    checkout_id: str
+
+
+class CopilotChatResponse(BaseModel):
+    intent: str
+    response: str
+    suggested_actions: list[str]
+    tool_result: Optional[Any] = None
+    mode: str
+    context_used: dict[str, Any]
+    routing_error: Optional[str] = None
+
+
+class ProfileResponse(BaseModel):
+    user_id: str
+    goal: str
+    diet: str
+    allergies: list[Any]
+    disliked_foods: list[Any]
+    budget: str
+    preferred_store: str
+    training_days: int
+    equipment: list[Any]
+    calorie_target: int
+    updated_at: str
+
+
+class BagItemModel(BaseModel):
+    id: str
+    product_id: Optional[str] = None
+    product: dict[str, Any]
+    quantity: int
+    created_at: str
+
+
+class BagAddedModel(BaseModel):
+    id: str
+    product_id: Optional[str] = None
+    product: dict[str, Any]
+    quantity: int
+
+
+class BagResponse(BaseModel):
+    user_id: str
+    items: list[BagItemModel]
+    count: int
+
+
+class BagAddResponse(BaseModel):
+    user_id: str
+    added: BagAddedModel
+    items: list[BagItemModel]
+
+
+class BagClearResponse(BaseModel):
+    user_id: str
+    cleared: int
+    items: list[BagItemModel]
+
+
+class SavedPlanModel(BaseModel):
+    id: str
+    plan: dict[str, Any]
+    created_at: str
+
+
+class PlansResponse(BaseModel):
+    user_id: str
+    meal_plans: list[SavedPlanModel]
+    workout_plans: list[SavedPlanModel]
+
+
+class PlanSaveResponse(BaseModel):
+    id: str
+    type: str
+    user_id: str
+    plan: dict[str, Any]
+
+
+class CoachClientModel(BaseModel):
+    id: str
+    client_name: str
+    goal: str
+    diet: str
+    allergies: list[Any]
+    days_per_week: int
+    equipment: list[Any]
+    calorie_target: int
+    created_at: str
+    updated_at: str
+
+
+class CoachClientListResponse(BaseModel):
+    clients: list[CoachClientModel]
+    count: int
+
+
+class ClientPlanRecordModel(BaseModel):
+    id: str
+    client_id: str
+    plan: dict[str, Any]
+    created_at: str
+
+
+class ClientPlanListResponse(BaseModel):
+    client_id: str
+    plans: list[ClientPlanRecordModel]
+    count: int
+
+
 def get_client() -> OpenAI:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -292,12 +515,12 @@ def generate_shopping_list_data(meal_plan: Any, servings: int) -> Any:
     return parse_json_response(result)
 
 
-@app.get("/")
+@app.get("/", response_model=RootResponse)
 def root() -> dict[str, str]:
     return {"status": "ok", "project": "Food Safety AI Agent"}
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 def health() -> dict[str, bool]:
     return {"healthy": True}
 
@@ -315,7 +538,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     return ChatResponse(response=answer)
 
 
-@app.post("/copilot/chat")
+@app.post("/copilot/chat", response_model=CopilotChatResponse)
 def context_chat(request: ContextChatRequest) -> dict[str, Any]:
     user_id = request.user_id or request.context.get("user_id")
     context = dict(request.context)
@@ -346,44 +569,44 @@ def context_chat(request: ContextChatRequest) -> dict[str, Any]:
     return result
 
 
-@app.get("/profile/{user_id}")
+@app.get("/profile/{user_id}", response_model=ProfileResponse)
 def profile_get(user_id: str) -> dict[str, Any]:
     return get_profile(user_id)
 
 
-@app.put("/profile/{user_id}")
+@app.put("/profile/{user_id}", response_model=ProfileResponse)
 def profile_put(user_id: str, request: ProfileUpdateRequest) -> dict[str, Any]:
     return update_profile(user_id, request.model_dump())
 
 
-@app.get("/bag/{user_id}")
+@app.get("/bag/{user_id}", response_model=BagResponse)
 def persistent_bag_get(user_id: str) -> dict[str, Any]:
     items = get_bag(user_id)
     return {"user_id": user_id, "items": items, "count": len(items)}
 
 
-@app.post("/bag/{user_id}/add")
+@app.post("/bag/{user_id}/add", response_model=BagAddResponse)
 def persistent_bag_add(user_id: str, request: BagAddRequest) -> dict[str, Any]:
     item = add_bag_item(user_id, request.product, request.quantity)
     return {"user_id": user_id, "added": item, "items": get_bag(user_id)}
 
 
-@app.delete("/bag/{user_id}/clear")
+@app.delete("/bag/{user_id}/clear", response_model=BagClearResponse)
 def persistent_bag_clear(user_id: str) -> dict[str, Any]:
     return {"user_id": user_id, "cleared": clear_bag(user_id), "items": []}
 
 
-@app.get("/plans/{user_id}")
+@app.get("/plans/{user_id}", response_model=PlansResponse)
 def plans_get(user_id: str) -> dict[str, Any]:
     return {"user_id": user_id, **get_user_plans(user_id)}
 
 
-@app.post("/plans/{user_id}/meal")
+@app.post("/plans/{user_id}/meal", response_model=PlanSaveResponse)
 def plans_save_meal(user_id: str, request: PlanSaveRequest) -> dict[str, Any]:
     return save_user_plan(user_id, "meal", request.plan)
 
 
-@app.post("/plans/{user_id}/workout")
+@app.post("/plans/{user_id}/workout", response_model=PlanSaveResponse)
 def plans_save_workout(user_id: str, request: PlanSaveRequest) -> dict[str, Any]:
     return save_user_plan(user_id, "workout", request.plan)
 
@@ -401,31 +624,34 @@ def create_meal_plan(request: MealPlanRequest) -> Any:
     return generate_meal_plan_data(prompt)
 
 
-@app.post("/workout-plan")
+@app.post("/workout-plan", response_model=WorkoutPlanResponse)
 def create_workout_plan(request: WorkoutPlanRequest) -> dict[str, Any]:
     return build_workout_plan(request.model_dump())
 
 
-@app.post("/coach/client-plan")
+@app.post("/coach/client-plan", response_model=CoachClientPlanResponse)
 def create_coach_client_plan(request: CoachClientPlanRequest) -> dict[str, Any]:
     request_data = request.model_dump()
     plan = build_client_plan(request_data)
-    plan["persistence"] = save_client_plan(request_data, plan)
+    try:
+        plan["persistence"] = save_client_plan(request_data, plan)
+    except ClientNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return plan
 
 
-@app.get("/coach/clients")
+@app.get("/coach/clients", response_model=CoachClientListResponse)
 def coach_clients() -> dict[str, Any]:
     clients = list_clients()
     return {"clients": clients, "count": len(clients)}
 
 
-@app.post("/coach/clients")
+@app.post("/coach/clients", response_model=CoachClientModel)
 def coach_clients_create(request: CoachClientCreateRequest) -> dict[str, Any]:
     return create_or_update_client(request.model_dump())
 
 
-@app.get("/coach/clients/{client_id}")
+@app.get("/coach/clients/{client_id}", response_model=CoachClientModel)
 def coach_client(client_id: str) -> dict[str, Any]:
     client = get_client_profile(client_id)
     if client is None:
@@ -433,7 +659,7 @@ def coach_client(client_id: str) -> dict[str, Any]:
     return client
 
 
-@app.get("/coach/clients/{client_id}/plans")
+@app.get("/coach/clients/{client_id}/plans", response_model=ClientPlanListResponse)
 def coach_client_plans(client_id: str) -> dict[str, Any]:
     if get_client_profile(client_id) is None:
         raise HTTPException(status_code=404, detail="Client profile not found.")
@@ -441,31 +667,35 @@ def coach_client_plans(client_id: str) -> dict[str, Any]:
     return {"client_id": client_id, "plans": plans, "count": len(plans)}
 
 
-@app.post("/coach/clients/{client_id}/plans")
+@app.post("/coach/clients/{client_id}/plans", response_model=ClientPlanRecordModel)
 def coach_client_plans_save(client_id: str, request: PlanSaveRequest) -> dict[str, Any]:
     try:
         return save_plan_for_client(client_id, request.plan)
-    except ValueError as exc:
+    except ClientNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/checkout/prepare")
+@app.post("/checkout/prepare", response_model=CheckoutPrepareResponse)
 def checkout_prepare(request: CheckoutPrepareRequest) -> dict[str, Any]:
     try:
         return prepare_checkout(request.model_dump())
+    except ClientNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/checkout/instacart")
+@app.post("/checkout/instacart", response_model=InstacartCheckoutResponse)
 def checkout_instacart(request: InstacartCheckoutRequest) -> dict[str, Any]:
     try:
         return prepare_instacart_checkout(request.model_dump())
+    except ClientNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.get("/checkout/{checkout_id}")
+@app.get("/checkout/{checkout_id}", response_model=CheckoutSessionResponse)
 def checkout_session(checkout_id: str) -> dict[str, Any]:
     checkout = get_checkout(checkout_id)
     if checkout is None:
