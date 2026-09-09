@@ -3,8 +3,10 @@
 import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
 
 import { errorMessage as detailMessage } from '../lib/api';
+import PersonalizedCopilot, { CatalogProduct } from './PersonalizedCopilot';
 
 type Product = {
+  product_id?: string;
   name: string;
   brand: string;
   category: string;
@@ -73,7 +75,7 @@ function ProductOption({ product }: { product: Product }) {
 
 export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: string; mealPlan?: JsonObject | null }) {
   const [goal, setGoal] = useState('high protein');
-  const [scannedProduct, setScannedProduct] = useState<Product | null>(null);
+  const [customProducts, setCustomProducts] = useState<Product[]>([]);
   const [scanOpen, setScanOpen] = useState(false);
   const [scanText, setScanText] = useState('Protein Oat Bar\nGood Foods\nCalories 190\nProtein 10g\nDietary Fiber 6g\nTotal Sugars 5g\nSodium 180mg\nIngredients: oats, almonds, dates');
   const [scanImage, setScanImage] = useState<string | null>(null);
@@ -103,7 +105,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
   const [copilotLoading, setCopilotLoading] = useState(false);
   const [copilotError, setCopilotError] = useState<string | null>(null);
 
-  const products = useMemo(() => scannedProduct ? [...DEMO_PRODUCTS, scannedProduct] : DEMO_PRODUCTS, [scannedProduct]);
+  const products = useMemo(() => [...DEMO_PRODUCTS, ...customProducts], [customProducts]);
   const currentProduct = products[explainIndex] ?? DEMO_PRODUCTS[1];
   const currentProductScore = explainResult?.score;
   const mainSwap = (bagResult?.swaps ?? [])[0] as JsonObject | undefined;
@@ -151,8 +153,8 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
       const payload = await post('/product/scan', { label_text: scanText.trim() || null, image_data_url: scanImage });
       const product = payload.product as Product | undefined;
       if (!product?.name || !product.nutrition) throw new Error('The scan did not return a usable product.');
-      setScannedProduct(product);
-      const scannedIndex = DEMO_PRODUCTS.length;
+      setCustomProducts(current => [...current, product]);
+      const scannedIndex = DEMO_PRODUCTS.length + customProducts.length;
       setExplainIndex(scannedIndex);
       setExplainResult(null);
       setCompareIndexes([scannedIndex, 2]);
@@ -265,6 +267,17 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     }
   }
 
+  function applyPersonalizedSwap(replacement: CatalogProduct, originalName: string) {
+    const existingIndex = products.findIndex(p => p.product_id === replacement.product_id || p.name === replacement.name);
+    const index = existingIndex >= 0 ? existingIndex : products.length;
+    if (existingIndex < 0) {
+      const nutrition = Object.fromEntries(Object.entries(replacement.nutrition).filter((entry): entry is [string, number] => typeof entry[1] === 'number'));
+      setCustomProducts(current => [...current, { ...replacement, nutrition }]);
+    }
+    setBagIndexes(current => current.map(i => products[i]?.name === originalName ? index : i));
+    setExplainIndex(index); setExplainResult(null); setCompareResult(null); setBagResult(null); setCopilotResult(null);
+  }
+
   return (
     <section id="decision" className="decision-engine" style={styles.section}>
       <div className="decision-hero" style={styles.hero}>
@@ -277,7 +290,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
             <strong>{currentProduct.name}</strong>
             <span style={styles.contextDivider} />
             <span>Score</span>
-            <strong style={styles.contextScore}>{currentProductScore ?? 42} / 100</strong>
+            <strong style={styles.contextScore}>{currentProductScore != null ? `${currentProductScore} / 100` : 'Not scored yet'}</strong>
           </div>
           <label style={styles.goalLabel}>
             Shared nutrition goal
@@ -288,7 +301,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
         <aside className="decision-snapshot" style={styles.snapshot} aria-label="Current product nutrition snapshot">
           <div style={styles.snapshotHeader}>
             <div><span style={styles.snapshotLabel}>Current decision</span><strong>{currentProduct.name}</strong></div>
-            <span style={styles.snapshotScore}>{currentProductScore ?? 42} / 100</span>
+            <span style={styles.snapshotScore}>{currentProductScore != null ? `${currentProductScore} / 100` : 'Not scored yet'}</span>
           </div>
           <div style={styles.snapshotRule} />
           <strong style={styles.driverTitle}>What is driving the score</strong>
@@ -467,6 +480,8 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
           )}
         </article>
       </div>
+
+      <PersonalizedCopilot apiUrl={apiUrl} currentName={currentProduct.name} bagNames={bagIndexes.map(index => products[index]?.name).filter(Boolean)} goal={goal} onApply={applyPersonalizedSwap} />
 
       <footer style={styles.integrationFooter}>
         <span>Designed to plug into:</span>

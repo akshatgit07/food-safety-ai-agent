@@ -137,6 +137,47 @@ health check while serving none of the real API.
 - Without `DATABASE_URL` the backend falls back to SQLite under `/tmp`, which Render
   wipes on every deploy. Set a Postgres URL for anything that must survive a redeploy.
 
-## Planned stack
-FastAPI, OpenAI, PostgreSQL, Next.js, Docker. LangGraph and ChromaDB are aspirational
-and not yet wired in.
+## Copilot orchestration
+
+The personalized `/v2/copilot/chat` workflow adds canonical products, deterministic
+G-Personal scoring, hard constraints, catalog swaps, and provenance. See the
+[personalized copilot guide](docs/personalized-copilot.md) for APIs, scoring policy,
+local testing, implementation files, and limitations. Legacy routes remain intact.
+
+`POST /copilot/chat` now runs a LangGraph workflow:
+`load_context → detect_intent → tool/chat → respond`, with a chat fallback for
+missing tool context. Existing product, bag, meal, workout, client, and checkout
+services remain the tools; product scoring does not require an LLM call.
+The graph follows the [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api).
+
+Send `load_memory: true` to load saved preferences, bag contents, the latest meal
+plan, recent scans, and the last six messages. Explicit request context overrides
+saved defaults, including empty lists. Memory remains in SQLAlchemy, using the
+existing `DATABASE_URL` (Postgres on Render, SQLite for local demos).
+No Redis, graph server, or new API key is required.
+
+```bash
+curl http://localhost:8000/copilot/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Build me a 5 day meal plan","user_id":"demo-user","load_memory":true}'
+```
+
+The response retains `intent`, `response`, `suggested_actions`, `tool_result`,
+`mode`, `routing_error`, and `context_used`. Shopping-list requests can now use
+the latest saved meal plan without resending it. General chat receives saved
+restrictions and recent conversation history. Provider HTTP failures continue
+to surface as errors; tools are not automatically retried because some write data.
+
+Run graph and API regression tests against a disposable database:
+
+```bash
+cd backend
+DATABASE_URL=sqlite:////tmp/guiltless-graph-tests.db python -m unittest discover -s tests -v
+```
+
+This is a bounded, one-tool-per-request workflow, not a multi-step autonomous
+planner. There is no graph checkpoint replay. User IDs remain demo identifiers,
+not authenticated identities; add authentication before exposing private user
+memory publicly. USDA lookup exists separately; hybrid retrieval, pgvector,
+Redis caching, and reranking remain future work. `OPENAI_API_KEY` enables the
+existing AI chat/planning path; deterministic product tools work without it.

@@ -278,4 +278,7 @@ def get_checkout(checkout_id: str) -> dict[str, Any] | None:
 
 def load_user_memory(user_id: str = DEMO_USER_ID) -> dict[str, Any]:
     plans = get_user_plans(user_id, limit=3)
-    return {"profile": get_profile(user_id), "bag": [item["product"] for item in get_bag(user_id)], "recent_plans": plans, "recent_scans": recent_scans(user_id, limit=3)}
+    with session_scope() as session:
+        rows = session.query(CopilotMessage).filter(CopilotMessage.user_id == user_id).order_by(CopilotMessage.created_at.desc()).limit(6).all()
+        messages = [{"role": row.role, "content": row.content[:4000], "intent": row.intent} for row in reversed(rows)]
+    return {"profile": get_profile(user_id), "bag": [item["product"] for item in get_bag(user_id)], "recent_plans": plans, "recent_scans": recent_scans(user_id, limit=3), "recent_messages": messages}

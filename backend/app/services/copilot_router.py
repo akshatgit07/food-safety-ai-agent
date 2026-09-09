@@ -37,4 +37,7 @@ def build_context_prompt(message: str, context: dict[str, Any] | None = None) ->
         parts.append(f"Current bag: {context['bag']}")
     if context.get("preferences"):
         parts.append(f"Preferences and restrictions: {context['preferences']}")
+    for key in ("diet", "allergies", "disliked_foods", "calorie_target", "budget", "preferred_store", "recent_messages", "meal_plan"):
+        if context.get(key) is not None:
+            parts.append(f"{key}: {context[key]}")
     return "\n".join(parts)

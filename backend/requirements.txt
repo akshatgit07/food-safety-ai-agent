@@ -1,7 +1,7 @@
 # Pinned to major versions so a Render rebuild cannot silently pick up a breaking
-# release. Only packages the backend actually imports are listed; langgraph,
-# langchain, chromadb and loguru were declared but never imported, and chromadb
-# alone added a multi-minute build for code that does not exist yet.
+# release. LangGraph orchestrates the existing internal services; no vector
+# database or separate graph server is required.
+langgraph>=1.0,<2.0
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30,<1.0
 pydantic>=2.8,<3.0

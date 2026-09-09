@@ -100,10 +100,10 @@ export default function Phase4ProductLayer({ apiUrl, latestMealPlan, latestWorko
   return (
     <section id="product-layer" className="phase4-shell">
       <header className="phase4-header">
-        <div><span>Persistence · Memory · Commerce</span><h2>Phase 4 product layer</h2><p>Phase 4 turns the prototype into a persistent product layer: memory, saved plans, bag persistence, and commerce handoff.</p></div>
+        <div><span>Your Guiltless workspace</span><h2>Your plans, preferences, and bag</h2><p>Keep your preferences, save your plans, and pick up where you left off.</p></div>
         <strong>demo-user</strong>
       </header>
-      <nav className="phase4-tabs" aria-label="Phase 4 product areas">
+      <nav className="phase4-tabs" aria-label="Saved product areas">
         {([['profile','Profile / Memory'],['bag','Persistent Bag'],['plans','Saved Plans'],['clients','Trainer Clients']] as [Tab,string][]).map(([value,label]) => <button key={value} className={tab === value ? 'active' : ''} onClick={() => setTab(value)}>{label}</button>)}
       </nav>
       {loading && <div className="phase4-alert">Loading saved product state…</div>}

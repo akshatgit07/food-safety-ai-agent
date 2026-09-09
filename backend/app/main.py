@@ -10,6 +10,12 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from app.agent import CopilotRouter
+from app.agent.graph import CopilotGraph
+from app.agents.guiltless_graph import GuiltlessGraph
+from app.domain.copilot import CopilotV2Request, CopilotV2Response
+from app.domain.models import Product as CanonicalProduct
+from app.services.product_lookup import MemoryCache, MemoryProductRepository, ProductLookup, demo_catalog
+from app.services.product_retriever import LocalCandidateRetriever
 from app.services.bag_optimizer import optimize_bag
 from app.services.coach_planner import build_client_plan
 from app.services.commerce import prepare_checkout, prepare_instacart_checkout
@@ -542,31 +548,53 @@ def chat(request: ChatRequest) -> ChatResponse:
 def context_chat(request: ContextChatRequest) -> dict[str, Any]:
     user_id = request.user_id or request.context.get("user_id")
     context = dict(request.context)
-    if request.load_memory or context.get("load_memory"):
+    use_memory = bool(request.load_memory or context.get("load_memory"))
+    if use_memory:
         user_id = str(user_id or DEMO_USER_ID)
-        memory = load_user_memory(user_id)
-        context["memory"] = memory
-        context.setdefault("profile", memory["profile"])
-        context.setdefault("bag", memory["bag"])
-        context.setdefault("recent_plans", memory["recent_plans"])
-        context.setdefault("recent_scans", memory["recent_scans"])
-        context.setdefault("goal", memory["profile"]["goal"])
-        context.setdefault("diet", memory["profile"]["diet"])
-        context.setdefault("equipment", memory["profile"]["equipment"])
-        context.setdefault("days_per_week", memory["profile"]["training_days"])
-        context.setdefault("calorie_target", memory["profile"]["calorie_target"])
-    if user_id:
-        save_copilot_message(str(user_id), "user", request.message, None, context)
     router = CopilotRouter(
         ai_runner=run_ai if os.getenv("OPENAI_API_KEY") else None,
         meal_plan_tool=generate_meal_plan_data,
         shopping_list_tool=generate_shopping_list_data,
     )
-    result = router.route(request.message, context)
-    result["context_used"] = context
+    result = CopilotGraph(router, load_user_memory).route(
+        request.message, context, user_id=str(user_id) if user_id else None, load_memory=use_memory,
+    )
     if user_id:
+        # Store only current input context, never the recursively loaded history.
+        save_copilot_message(str(user_id), "user", request.message, None, context)
         save_copilot_message(str(user_id), "assistant", str(result.get("response") or ""), str(result.get("intent") or "general_chat"), context)
     return result
+
+
+_catalog = demo_catalog()
+_product_lookup = ProductLookup(MemoryProductRepository(_catalog), MemoryCache())
+_product_retriever = LocalCandidateRetriever(_catalog)
+
+
+@app.get("/v2/products", response_model=list[CanonicalProduct])
+def canonical_products():
+    return _catalog
+
+
+@app.get("/v2/products/lookup", response_model=CanonicalProduct)
+def canonical_product_lookup(barcode: str | None = None, product_id: str | None = None):
+    try:
+        product = _product_lookup.find(barcode=barcode, product_id=product_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
+
+@app.post("/v2/copilot/chat", response_model=CopilotV2Response)
+def grounded_copilot(request: CopilotV2Request):
+    graph = GuiltlessGraph(
+        _product_lookup, _product_retriever,
+        CopilotRouter(meal_plan_tool=generate_meal_plan_data, shopping_list_tool=generate_shopping_list_data),
+        load_user_memory,
+    )
+    return graph.run(request.model_dump(exclude_none=True, exclude_unset=True))
 
 
 @app.get("/profile/{user_id}", response_model=ProfileResponse)
