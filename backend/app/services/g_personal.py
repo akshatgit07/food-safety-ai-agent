@@ -4,6 +4,7 @@ Base quality reuses the existing rubric with no user goal adjustment. Personal
 factors apply to one declared serving. Missing targets add no target-based bonus.
 """
 import re
+from app.observability import observed
 
 from app.domain.models import DailyNutritionState, FactorImpact, GPersonalScore, Product, UserProfile
 from app.services.product_intelligence import explain_product
@@ -26,6 +27,51 @@ ALLERGENS = {
     "sesame": {"sesame", "tahini"},
 }
 
+# Whole-word matching alone missed every derived form: "sodium caseinate",
+# "buttermilk", "lactose", "milkfat" and "arachis oil" all read as allergen-free
+# to a milk or peanut allergic user. These stems are matched as substrings.
+ALLERGEN_STEMS = {
+    "milk": ("milk", "dairy", "casein", "lactose", "lactalbumin", "lactoglobulin",
+             "whey", "buttermilk", "butterfat", "milkfat", "ghee", "curd", "custard"),
+    "peanut": ("peanut", "groundnut", "arachis", "monkey nut"),
+    "tree nut": ("almond", "cashew", "walnut", "hazelnut", "pistachio", "pecan",
+                 "macadamia", "praline", "marzipan", "filbert", "brazil nut", "pine nut"),
+    "soy": ("soy", "edamame", "tofu", "tempeh", "miso"),
+    "wheat": ("wheat", "semolina", "spelt", "durum", "farina", "bulgur", "couscous", "seitan"),
+    "gluten": ("gluten", "wheat", "barley", "rye", "malt", "spelt", "triticale",
+               "durum", "semolina", "seitan", "farro"),
+    "egg": ("egg", "albumin", "mayonnaise", "meringue", "ovalbumin", "ovomucoid"),
+    "fish": ("fish", "salmon", "tuna", "anchov", "sardine", "tilapia", "pollock",
+             "haddock", "mackerel", "surimi"),
+    "shellfish": ("shellfish", "shrimp", "prawn", "crab", "lobster", "mussel",
+                  "clam", "oyster", "scallop", "krill", "crayfish"),
+    "sesame": ("sesame", "tahini", "benne"),
+}
+
+# Substring matching creates homonyms ("veggie" contains "egg", "coconut milk"
+# contains "milk", "gluten-free" contains "gluten"). Each phrase is rewritten to
+# a form that keeps any genuine allergen it carries and drops the false one.
+SAFE_REWRITES = (
+    # "<allergen> free" is a claim, not a presence. The replacement must not itself
+    # contain the stem, or "certified gluten-free oats" re-matches "gluten".
+    ("gluten free", "freefromclaim"), ("dairy free", "freefromclaim"),
+    ("nut free", "freefromclaim"), ("egg free", "freefromclaim"),
+    ("soy free", "freefromclaim"), ("milk free", "freefromclaim"),
+    ("peanut free", "freefromclaim"), ("wheat free", "freefromclaim"),
+    ("lactose free", "freefromclaim"), ("sesame free", "freefromclaim"),
+    ("almond milk", "almond"), ("soy milk", "soy"), ("oat milk", "oat"),
+    ("coconut milk", "coconut"), ("rice milk", "rice"), ("cashew milk", "cashew"),
+    ("hemp milk", "hemp"), ("pea milk", "pea"), ("flax milk", "flax"),
+    ("peanut butter", "peanut"), ("almond butter", "almond"), ("cashew butter", "cashew"),
+    ("sunflower butter", "sunflower"), ("seed butter", "seed"), ("shea butter", "shea"),
+    ("cocoa butter", "cocoa"), ("cacao butter", "cacao"), ("apple butter", "apple"),
+    ("bean curd", "tofu"), ("coconut cream", "coconut"), ("cream of tartar", "tartar"),
+    ("maltodextrin", "mdextrin"), ("maltitol", "mtitol"),
+    ("eggplant", "aubergine"), ("veggies", "vegetables"), ("veggie", "vegetable"),
+    ("butternut", "squash"), ("nutmeg", "spice"), ("water chestnut", "waterchestnut"),
+    ("chestnut", "chestnutseed"),
+)
+
 
 def contains(text: str, word: str) -> bool:
     return f" {normalize(word)} " in f" {normalize(text)} "
@@ -38,16 +84,37 @@ def aliases(value: str) -> set[str]:
     return next((terms for root, terms in ALLERGENS.items() if key == root or key in terms), {key})
 
 
+def scan_text(*parts: str) -> str:
+    """Normalized allergen-scanning text with known homonyms rewritten."""
+    text = normalize(" ".join(part for part in parts if part))
+    for phrase, replacement in SAFE_REWRITES:
+        text = text.replace(phrase, replacement)
+    return text
+
+
+def allergen_matches(text: str, value: str) -> bool:
+    """True when the scan text carries `value` as a word or a derived form."""
+    key = normalize(value)
+    groups = ["peanut", "tree nut"] if key in {"nuts", "nut"} else [
+        root for root, terms in ALLERGENS.items() if key == root or key in terms
+    ]
+    if any(f" {term} " in f" {text} " for term in (aliases(value) if groups else {key})):
+        return True
+    stems = tuple(stem for group in groups for stem in ALLERGEN_STEMS[group]) or (key,)
+    return any(stem in text for stem in stems)
+
 def hard_constraint_failures(product: Product, profile: UserProfile) -> list[str]:
     failures = []
-    text = " ".join(product.ingredients + product.allergens)
+    # The product name and category are scanned too: "Peanut Butter Cups" with an
+    # incomplete ingredient list previously passed a peanut allergy check.
+    text = scan_text(product.name, product.category, *product.ingredients, *product.allergens)
     for allergy in profile.allergies:
-        if any(contains(text, term) for term in aliases(allergy)):
+        if allergen_matches(text, allergy):
             failures.append(f"Allergy conflict: {allergy}")
     if profile.allergies and not product.allergen_info_complete:
         failures.append("Allergen information is incomplete; compatibility cannot be confirmed")
     for ingredient in profile.ingredients_to_avoid:
-        if any(contains(text, term) for term in aliases(ingredient)):
+        if allergen_matches(text, ingredient):
             failures.append(f"Excluded ingredient: {ingredient}")
     if profile.ingredients_to_avoid and not product.ingredients:
         failures.append("Ingredient information is missing")
@@ -59,7 +126,7 @@ def hard_constraint_failures(product: Product, profile: UserProfile) -> list[str
         label = normalize(diet)
         if label in {"balanced", "no restriction", "high protein"}:
             continue
-        if label not in flags or any(contains(text, term) for term in forbidden.get(label, set())):
+        if label not in flags or any(allergen_matches(text, term) for term in forbidden.get(label, set())):
             failures.append(f"Diet constraint not satisfied: {diet}")
     return failures
 
@@ -69,6 +136,7 @@ def base_score(product: Product) -> float:
     return float(explain_product(product.model_dump(), "balanced nutrition")["score"])
 
 
+@observed("guiltless.score.personal", "tool")
 def score_product(product: Product, profile: UserProfile, daily: DailyNutritionState) -> GPersonalScore:
     base = base_score(product)
     failures = hard_constraint_failures(product, profile)
@@ -84,10 +152,16 @@ def score_product(product: Product, profile: UserProfile, daily: DailyNutritionS
     ):
         if target and amount:
             remaining = max(0, target - consumed)
-            impact = weight * min(amount, remaining) / target
+            fills = min(amount, remaining)
             excess = max(0, amount - remaining)
-            impact -= min(weight / 2, weight * excess / target)
-            factors.append(FactorImpact(factor=f"remaining_{name}", impact=round(impact, 3), reason=f"{remaining:g} remaining of {target:g}; serving provides {amount:g}"))
+            penalty = min(weight / 2, weight * excess / target)
+            impact = weight * fills / target - penalty
+            # The reason has to account for the same number the impact reports,
+            # including the over-target penalty folded into it.
+            reason = f"{remaining:g} remaining of {target:g}; serving provides {amount:g}, covering {fills:g}"
+            if excess:
+                reason += f"; {excess:g} over the remaining need reduces this factor by {penalty:.3g}"
+            factors.append(FactorImpact(factor=f"remaining_{name}", impact=round(impact, 3), reason=reason))
     for nutrient, target in sorted(profile.micronutrient_targets.items()):
         if target and nutrient in n.micronutrients:
             gap = max(0, target - daily.micronutrients_consumed.get(nutrient, 0))
@@ -99,7 +173,7 @@ def score_product(product: Product, profile: UserProfile, daily: DailyNutritionS
         factors.append(FactorImpact(factor="goal_fit", impact=round(min(4, n.protein_g / 5) * remaining_fraction, 3), reason="Protein supports the selected goal; benefit decreases as the daily target is met"))
     elif "fat loss" in goal or "weight" in goal:
         factors.append(FactorImpact(factor="goal_fit", impact=2 if n.fiber_g >= 3 and n.calories <= 250 else 0, reason="Fiber and serving calories considered for the selected goal"))
-    if any(contains(" ".join([product.name, *product.ingredients]), dislike) for dislike in profile.dislikes):
+    if any(contains(scan_text(product.name, *product.ingredients), dislike) for dislike in profile.dislikes):
         factors.append(FactorImpact(factor="dislike", impact=-5, reason="Matches a stated dislike"))
     if set(product.stores) & set(profile.preferred_stores):
         factors.append(FactorImpact(factor="preferred_store", impact=1, reason="Available from a preferred store"))

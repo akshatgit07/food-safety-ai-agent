@@ -46,6 +46,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"healthy": True})
 
+    def test_database_readiness(self):
+        response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ready": True, "database": "sqlite"})
+
+    def test_readiness_failure_hides_connection_details(self):
+        with patch("app.main.database_readiness", side_effect=RuntimeError("private connection details")):
+            response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("private", response.text)
+
     def test_demo_profile_get_and_update(self):
         updated = self.client.put(
             "/profile/demo-user",

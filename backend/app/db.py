@@ -6,11 +6,21 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterator
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, create_engine, event
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, create_engine, event, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 
 Base = declarative_base()
+
+
+class CatalogEmbeddingRecord(Base):
+    __tablename__ = "catalog_embeddings"
+    product_id = Column(String(150), ForeignKey("catalog_products.product_id"), primary_key=True)
+    model = Column(String(100), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    vector_json = Column(Text, nullable=False)
+
+
 _engine = None
 _session_factory = None
 _init_lock = threading.Lock()
@@ -47,7 +57,10 @@ def init_db() -> None:
         if _session_factory is not None:
             return
         url = database_url()
-        engine_kwargs = {"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {"pool_pre_ping": True}
+        engine_kwargs = {"connect_args": {"check_same_thread": False}} if url.startswith("sqlite") else {
+            "pool_pre_ping": True, "pool_size": 3, "max_overflow": 2,
+            "pool_timeout": 10, "connect_args": {"connect_timeout": 10},
+        }
         engine = create_engine(url, **engine_kwargs)
         if url.startswith("sqlite"):
             _enable_sqlite_foreign_keys(engine)
@@ -56,6 +69,14 @@ def init_db() -> None:
         # non-None _engine with a still-unset _session_factory.
         _session_factory = sessionmaker(bind=engine, expire_on_commit=False)
         _engine = engine
+
+
+def database_readiness() -> dict:
+    """Confirm connectivity without disclosing hostnames, users, or credentials."""
+    init_db()
+    with _engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    return {"ready": True, "database": _engine.dialect.name}
 
 
 @contextmanager
@@ -104,6 +125,17 @@ class ProductRecord(Base):
     nutrition_json = Column(Text, nullable=False, default="{}")
     ingredients_json = Column(Text, nullable=False, default="[]")
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class CatalogProductRecord(Base):
+    """Canonical source-backed catalog; separate from legacy scan records."""
+    __tablename__ = "catalog_products"
+    product_id = Column(String(150), primary_key=True)
+    barcode = Column(String(100), unique=True, nullable=True, index=True)
+    source = Column(String(100), nullable=False, index=True)
+    payload_json = Column(Text, nullable=False)
+    source_json = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
 class ScanHistory(Base):

@@ -30,6 +30,7 @@ class Provenance(DomainModel):
     verified: bool = False
     reference: str | None = None
     confidence: float = Field(default=0.3, ge=0, le=1)
+    retrieved_at: str | None = None
 
 
 class Product(DomainModel):

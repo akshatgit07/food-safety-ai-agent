@@ -13,12 +13,22 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    healthCheckPath: /ready
     envVars:
       - key: OPENAI_API_KEY
         sync: false
       - key: USDA_API_KEY
         sync: false
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: LANGSMITH_PROJECT
+        value: food-safety-ai-agent
+      - key: LANGSMITH_HIDE_INPUTS
+        value: "true"
+      - key: LANGSMITH_HIDE_OUTPUTS
+        value: "true"
       # Without DATABASE_URL the backend falls back to SQLite under /tmp, which
       # Render wipes on every deploy and restart. Set a Postgres URL for anything
       # that needs to survive a redeploy.

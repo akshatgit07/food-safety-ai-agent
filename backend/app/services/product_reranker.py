@@ -1,7 +1,9 @@
 from app.domain.models import DailyNutritionState, Product, UserProfile
+from app.observability import observed
 from app.services.g_personal import base_score, hard_constraint_failures, score_product
 
 
+@observed("guiltless.alternatives.rerank", "tool")
 def rerank(current: Product, candidates: list[tuple[Product, float]], profile: UserProfile,
            daily: DailyNutritionState) -> list[dict]:
     ranked = []
@@ -20,7 +22,7 @@ def rerank(current: Product, candidates: list[tuple[Product, float]], profile: U
         ranked.append({"product": product.model_dump(mode="json"), "semantic_similarity": round(similarity, 4),
                        "base_score_delta": delta, "personal_score": score.personal_score,
                        "scoring": score.model_dump(), "nutrition_improvement": nutrition, "rank_score": rank_score,
-                       "ranking_reasons": [f"Base quality change: {delta:+g}", f"Local relevance: {similarity:.2f}",
+                       "ranking_reasons": [f"Base quality change: {delta:+g}", f"Retrieval relevance: {similarity:.2f}",
                                            *[d.reason for d in score.drivers if d.impact > 0],
                                            *[p.reason for p in score.penalties],
                                            "Price unavailable" if product.price is None else f"Price fit impact: {price_fit:+g}",

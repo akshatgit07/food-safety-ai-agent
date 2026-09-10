@@ -1,5 +1,8 @@
 """Exact identifiers only. Redis and Postgres adapters can implement protocols."""
+import threading
+import time
 from collections import OrderedDict
+from app.observability import observed
 from typing import Protocol
 
 from app.domain.models import Product
@@ -17,19 +20,36 @@ class ProductCache(Protocol):
 
 
 class MemoryCache:
-    def __init__(self, capacity: int = 256):
+    """Process-local LRU. The instance is shared across requests, and FastAPI runs
+    sync endpoints on a threadpool, so every mutation is guarded."""
+
+    def __init__(self, capacity: int = 256, ttl_seconds: float = 60):
         self.capacity = capacity
+        self.ttl_seconds = ttl_seconds
+        self._expires: dict[str, float] = {}
         self.items: OrderedDict[str, Product] = OrderedDict()
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> Product | None:
-        product = self.items.get(key)
+        with self._lock:
+            if self._expires.get(key, 0) <= time.monotonic():
+                self.items.pop(key, None)
+                self._expires.pop(key, None)
+                return None
+            product = self.items.get(key)
+            if product is not None:
+                self.items.move_to_end(key)
         return product.model_copy(deep=True) if product else None
 
     def put(self, key: str, product: Product) -> None:
-        self.items[key] = product.model_copy(deep=True)
-        self.items.move_to_end(key)
-        while len(self.items) > self.capacity:
-            self.items.popitem(last=False)
+        copy = product.model_copy(deep=True)
+        with self._lock:
+            self.items[key] = copy
+            self._expires[key] = time.monotonic() + self.ttl_seconds
+            self.items.move_to_end(key)
+            while len(self.items) > self.capacity:
+                expired_key, _ = self.items.popitem(last=False)
+                self._expires.pop(expired_key, None)
 
 
 class MemoryProductRepository:
@@ -51,6 +71,7 @@ class ProductLookup:
     def __init__(self, repository: ProductRepository, cache: ProductCache | None = None):
         self.repository, self.cache = repository, cache
 
+    @observed("guiltless.product.exact_lookup", "tool")
     def find(self, *, barcode: str | None = None, product_id: str | None = None) -> Product | None:
         if (barcode is None) == (product_id is None):
             raise ValueError("Supply exactly one barcode or product_id")

@@ -49,7 +49,7 @@ class CopilotGraph:
               *, user_id: str | None = None, load_memory: bool = False) -> dict[str, Any]:
         return self.graph.invoke({"message": message, "context": dict(context or {}),
                                   "user_id": user_id, "load_memory": load_memory,
-                                  "routing_error": None})["output"]
+                                  "routing_error": None}, config={"run_name": "guiltless.graph.v1", "tags": ["copilot-v1"]})["output"]
 
     def _load_context(self, state: CopilotState) -> dict[str, Any]:
         context = dict(state["context"])

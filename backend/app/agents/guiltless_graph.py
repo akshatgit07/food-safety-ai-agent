@@ -56,7 +56,8 @@ class GuiltlessGraph:
         self.graph = graph.compile()
 
     def run(self, request: dict) -> dict:
-        state = self.graph.invoke({"message": request["message"], "request": request, "errors": [], "retrieved_candidates": []})
+        state = self.graph.invoke({"message": request["message"], "request": request, "errors": [], "retrieved_candidates": []},
+                                  config={"run_name": "guiltless.graph.v2", "tags": ["copilot-v2"], "metadata": {"score_version": SCORE_VERSION}})
         approved = {"intent": state["intent"], "response": state["response"], "grounding": state["grounding"],
                 "confidence": 0 if state["errors"] else self._confidence(state),
                 "suggested_actions": state["suggested_actions"], "tool_result": state["tool_result"],
@@ -109,7 +110,15 @@ class GuiltlessGraph:
     def _route_intent(self, state: GuiltlessState) -> dict:
         message = state["message"].lower()
         intent = "find_swap" if any(word in message for word in ("swap", "alternative", "replace")) and "bag" not in message else detect_intent(message)
-        return {"intent": intent if intent in BRANCHES else "general_chat"}
+        if intent not in BRANCHES:
+            intent = "general_chat"
+        # The keyword router misses natural phrasings ("explain", "is this good
+        # for me?"), which returned an ungrounded canned menu even though the
+        # caller had already resolved an exact product. An explicit identifier is
+        # a stronger signal of intent than the wording of the question.
+        if intent == "general_chat" and state.get("current_product") is not None:
+            intent = "explain_product"
+        return {"intent": intent}
 
     def _tool(self, state: GuiltlessState) -> dict:
         if state["errors"]:
@@ -160,7 +169,7 @@ class GuiltlessGraph:
         records = self._records(result)
         grounding = {"product_ids": sorted({p["product_id"] for p in records}), "score_version": SCORE_VERSION,
                      "data_sources": sorted({p["provenance"]["source"] for p in records}),
-                     "method": "deterministic catalog scoring and local lexical retrieval"}
+                     "method": "deterministic catalog scoring; retrieval method reported per alternative"}
         if state["errors"]:
             response = "I could not validate a recommendation. Check the product selection and constraints."
         elif "current_product" in result:

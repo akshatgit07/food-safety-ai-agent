@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.observability import observed
 
 import json
 import uuid
@@ -276,6 +277,7 @@ def get_checkout(checkout_id: str) -> dict[str, Any] | None:
         return {"checkout_id": row.id, "user_id": row.user_id, "client_id": row.client_id, "checkout_provider": row.provider, "status": row.status, "item_count": len(items), "items": items, "checkout_url": row.checkout_url, "created_at": row.created_at.isoformat()}
 
 
+@observed("guiltless.memory.load", "tool")
 def load_user_memory(user_id: str = DEMO_USER_ID) -> dict[str, Any]:
     plans = get_user_plans(user_id, limit=3)
     with session_scope() as session:

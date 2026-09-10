@@ -1,11 +1,13 @@
 """Fail-closed validation of catalog references and deterministic score claims."""
 from typing import Any
+from app.observability import observed
 
 from app.domain.models import DailyNutritionState, UserProfile
 from app.services.g_personal import base_score, hard_constraint_failures, score_product
 from app.services.product_lookup import ProductLookup
 
 
+@observed("guiltless.result.validate", "tool")
 def validate_result(result: dict, profile: UserProfile, daily: DailyNutritionState, lookup: ProductLookup) -> list[str]:
     try:
         return _validate_result(result, profile, daily, lookup)

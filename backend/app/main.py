@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import asynccontextmanager
+import asyncio
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
+from langsmith.wrappers import wrap_openai
+from app.observability import observed, flush_traces
 from pydantic import BaseModel, Field
 
 from app.agent import CopilotRouter
 from app.agent.graph import CopilotGraph
 from app.agents.guiltless_graph import GuiltlessGraph
 from app.domain.copilot import CopilotV2Request, CopilotV2Response
+from app.services.app_helper import HelperRequest, helper_reply
+from app.db import database_readiness, init_db
 from app.domain.models import Product as CanonicalProduct
 from app.services.product_lookup import MemoryCache, MemoryProductRepository, ProductLookup, demo_catalog
 from app.services.product_retriever import LocalCandidateRetriever
+from app.services.catalog_repository import SqlProductRepository, CatalogCandidateRetriever
 from app.services.bag_optimizer import optimize_bag
 from app.services.coach_planner import build_client_plan
 from app.services.commerce import prepare_checkout, prepare_instacart_checkout
@@ -44,10 +51,18 @@ from app.services.persistence import (
 from app.services.product_intelligence import compare_products, explain_product
 from app.services.workout_planner import build_workout_plan
 
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    await asyncio.to_thread(init_db)
+    yield
+    await asyncio.to_thread(flush_traces)
+
+
 app = FastAPI(
     title="Food Safety AI Agent",
     description="Nutrition chat, label scanning, product explainability, bag optimization, and meal-planning APIs.",
     version="0.6.0",
+    lifespan=lifespan,
 )
 
 allowed_origins = [
@@ -415,9 +430,10 @@ def get_client() -> OpenAI:
             status_code=503,
             detail="OPENAI_API_KEY is not configured on the backend.",
         )
-    return OpenAI(api_key=api_key)
+    return wrap_openai(OpenAI(api_key=api_key))
 
 
+@observed("guiltless.ai.generate")
 def run_ai(instructions: str, user_input: str) -> str:
     try:
         response = get_client().responses.create(
@@ -494,6 +510,7 @@ def safe_enrich_meal_plan(meal_plan: Any) -> Any:
         return meal_plan
 
 
+@observed("guiltless.meal_plan", "tool")
 def generate_meal_plan_data(prompt: dict[str, Any]) -> Any:
     result = run_ai(
         instructions=(
@@ -508,6 +525,7 @@ def generate_meal_plan_data(prompt: dict[str, Any]) -> Any:
     return safe_enrich_meal_plan(parse_json_response(result))
 
 
+@observed("guiltless.shopping_list", "tool")
 def generate_shopping_list_data(meal_plan: Any, servings: int) -> Any:
     result = run_ai(
         instructions=(
@@ -531,7 +549,16 @@ def health() -> dict[str, bool]:
     return {"healthy": True}
 
 
+@app.get("/ready")
+def readiness():
+    try:
+        return database_readiness()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database is unavailable") from None
+
+
 @app.post("/chat", response_model=ChatResponse)
+@observed("guiltless.chat")
 def chat(request: ChatRequest) -> ChatResponse:
     answer = run_ai(
         instructions=(
@@ -545,6 +572,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 
 @app.post("/copilot/chat", response_model=CopilotChatResponse)
+@observed("guiltless.copilot.v1")
 def context_chat(request: ContextChatRequest) -> dict[str, Any]:
     user_id = request.user_id or request.context.get("user_id")
     context = dict(request.context)
@@ -566,14 +594,24 @@ def context_chat(request: ContextChatRequest) -> dict[str, Any]:
     return result
 
 
-_catalog = demo_catalog()
-_product_lookup = ProductLookup(MemoryProductRepository(_catalog), MemoryCache())
-_product_retriever = LocalCandidateRetriever(_catalog)
+_catalog_repository = SqlProductRepository(seed_demo=os.getenv("CATALOG_SEED_DEMO", "true").lower() == "true")
+_product_lookup = ProductLookup(_catalog_repository, MemoryCache())
+_product_retriever = CatalogCandidateRetriever(_catalog_repository)
+# StateGraph.compile() is ~15 ms and the graph is stateless between runs, so it is
+# built once instead of per request. The router here has no ai_runner, and the
+# planning tools resolve run_ai at call time, so nothing is captured too early.
+_guiltless_graph = GuiltlessGraph(
+    _product_lookup, _product_retriever,
+    CopilotRouter(meal_plan_tool=generate_meal_plan_data, shopping_list_tool=generate_shopping_list_data),
+    load_user_memory,
+)
 
 
 @app.get("/v2/products", response_model=list[CanonicalProduct])
-def canonical_products():
-    return _catalog
+def canonical_products(limit: int = 100, offset: int = 0):
+    if not 1 <= limit <= 100 or offset < 0:
+        raise HTTPException(status_code=422, detail="limit must be 1–100 and offset must be nonnegative")
+    return _catalog_repository.list_products(limit=limit, offset=offset)
 
 
 @app.get("/v2/products/lookup", response_model=CanonicalProduct)
@@ -588,13 +626,17 @@ def canonical_product_lookup(barcode: str | None = None, product_id: str | None 
 
 
 @app.post("/v2/copilot/chat", response_model=CopilotV2Response)
+@observed("guiltless.copilot.v2")
 def grounded_copilot(request: CopilotV2Request):
-    graph = GuiltlessGraph(
-        _product_lookup, _product_retriever,
-        CopilotRouter(meal_plan_tool=generate_meal_plan_data, shopping_list_tool=generate_shopping_list_data),
-        load_user_memory,
-    )
-    return graph.run(request.model_dump(exclude_none=True, exclude_unset=True))
+    return _guiltless_graph.run(request.model_dump(exclude_none=True, exclude_unset=True))
+
+
+@app.post("/helper/chat")
+def app_helper_chat(request: "HelperRequest"):
+    try:
+        return helper_reply(request, _guiltless_graph)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/profile/{user_id}", response_model=ProfileResponse)
@@ -737,11 +779,13 @@ def create_shopping_list(request: ShoppingListRequest) -> Any:
 
 
 @app.post("/product/explain")
+@observed("guiltless.product.explain", "tool")
 def product_explain(request: ProductExplainRequest) -> dict[str, Any]:
     return explain_product(request.product, request.goal)
 
 
 @app.post("/product/scan")
+@observed("guiltless.product.scan", "tool")
 def product_scan(request: LabelScanRequest) -> dict[str, Any]:
     try:
         result = scan_label(
@@ -758,6 +802,7 @@ def product_scan(request: LabelScanRequest) -> dict[str, Any]:
 
 
 @app.post("/product/compare")
+@observed("guiltless.product.compare", "tool")
 def product_compare(request: ProductCompareRequest) -> dict[str, Any]:
     return compare_products(request.products, request.goal)
 
