@@ -208,6 +208,21 @@ class CopilotMessage(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
+class AppBehaviorEvent(Base):
+    """Small, declared app events used for contextual guidance.
+
+    This intentionally stores neither screenshots nor arbitrary interaction data.
+    """
+    __tablename__ = "app_behavior_events"
+    id = Column(String(36), primary_key=True)
+    user_id = Column(String(100), ForeignKey("users.id"), nullable=False, index=True)
+    event_type = Column(String(60), nullable=False, index=True)
+    screen = Column(String(60), nullable=False, index=True)
+    product_id = Column(String(150), nullable=True)
+    metadata_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
+
+
 class CheckoutRecord(Base):
     __tablename__ = "checkout_sessions"
     id = Column(String(36), primary_key=True)

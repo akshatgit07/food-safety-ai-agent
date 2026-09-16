@@ -126,6 +126,10 @@ npm run build
 
 ## Deployment
 
+Optional backend observability is documented in the
+[LangSmith tracing guide](docs/langsmith-tracing.md), including environment setup,
+payload privacy defaults, and trace verification.
+
 The backend must be deployed with **`backend/` as the service root** (see `render.yaml`).
 The repository also contains a legacy top-level `app/main.py` stub that exposes only
 `/` and `/health`; a service rooted at the repository root will boot and pass its
@@ -138,6 +142,24 @@ health check while serving none of the real API.
   wipes on every deploy. Set a Postgres URL for anything that must survive a redeploy.
 
 ## Copilot orchestration
+
+The monorepo also contains a deliberately separate
+[internal feature-development control plane](internal_devloop/README.md). It uses
+LangGraph checkpoints, mock provider interfaces, bounded retries, risk gates,
+human interrupts, and a local Slack-shaped adapter. It is not imported by or
+deployed with the consumer FastAPI service.
+
+The [app helper guide](docs/app-helper.md) describes the screen-aware helper,
+grounded score explanations, read-only actions, behavior-aware suggestions,
+event privacy boundaries, and mobile-style preview. The new
+`POST /app/events/{user_id}` and `POST /helper/proactive/{user_id}` endpoints let
+the host app send declared events and request a timely, dismissible suggestion.
+
+Canonical catalog records now persist in SQLAlchemy. See the
+[persistent catalog guide](docs/persistent-catalog.md) for exact barcode lookup,
+USDA import commands, source validation, and deployment settings.
+The [hybrid retrieval guide](docs/hybrid-retrieval.md) covers full-catalog safety
+filtering, offline embeddings, text fallback, and optional pgvector distance.
 
 The personalized `/v2/copilot/chat` workflow adds canonical products, deterministic
 G-Personal scoring, hard constraints, catalog swaps, and provenance. See the

@@ -6,6 +6,8 @@ import { errorMessage } from '../lib/api';
 export type CatalogProduct = {
   product_id: string; name: string; brand: string; category: string;
   nutrition: Record<string, unknown>; ingredients: string[];
+  provenance?: { source: string; retrieved_at?: string; reference?: string };
+  processing_metadata?: Record<string, string>;
 };
 type Score = {
   base_score: number; personal_score: number | null; compatibility: string;
@@ -13,7 +15,7 @@ type Score = {
   penalties: { factor: string; impact: number; reason: string }[];
   hard_constraint_failures: string[];
 };
-type Alternative = { product: CatalogProduct; scoring: Score; base_score_delta: number; ranking_reasons: string[] };
+type Alternative = { product: CatalogProduct; scoring: Score; base_score_delta: number; ranking_reasons: string[]; retrieval?: { method: string } };
 type Reply = {
   intent: string; response: string; errors: string[]; suggested_actions: string[];
   confidence: number; grounding: { data_sources: string[]; score_version: string };
@@ -29,9 +31,9 @@ const prompts: Record<string, string> = {
   optimize_bag: 'Optimize my bag', build_workout_plan: 'Build a workout plan',
 };
 
-export default function PersonalizedCopilot({ apiUrl, currentName, bagNames, goal, onApply }: {
-  apiUrl?: string; currentName: string; bagNames: string[]; goal: string;
-  onApply: (product: CatalogProduct, originalName: string) => void;
+export default function PersonalizedCopilot({ apiUrl, currentName, currentId, bagIds, goal, onApply }: {
+  apiUrl?: string; currentName: string; currentId?: string; bagIds: (string | undefined)[]; goal: string;
+  onApply: (product: CatalogProduct, originalId: string) => void;
 }) {
   const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
@@ -45,9 +47,11 @@ export default function PersonalizedCopilot({ apiUrl, currentName, bagNames, goa
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [barcode, setBarcode] = useState('');
+  const [lookupBusy, setLookupBusy] = useState(false);
   const requestVersion = useRef(0);
-  const product = catalog.find(p => p.name === currentName);
-  const bagKey = bagNames.join('|');
+  const product = catalog.find(p => p.product_id === currentId);
+  const bagKey = bagIds.join('|');
 
   useEffect(() => {
     const controller = new AbortController();
@@ -67,14 +71,30 @@ export default function PersonalizedCopilot({ apiUrl, currentName, bagNames, goa
 
   useEffect(() => {
     requestVersion.current += 1; setResult(null); setBusy(false); setError('');
-  }, [currentName, bagKey, goal, allergies, diet, target, consumed]);
+  }, [currentId, currentName, bagKey, goal, allergies, diet, target, consumed]);
+
+  async function findBarcode() {
+    setLookupBusy(true); setError(''); setSuccess(''); setResult(null);
+    requestVersion.current += 1;
+    try {
+      if (!apiUrl) throw new Error('Connect the backend first.');
+      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v2/products/lookup?barcode=${encodeURIComponent(barcode.trim())}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(response.status === 404 ? 'This barcode is not in the catalog yet. No approximate product was selected.' : errorMessage(data, response.status));
+      if (!data.product_id || !data.nutrition || !Array.isArray(data.ingredients)) throw new Error('The product record could not be read.');
+      setCatalog(current => [...current.filter(p => p.product_id !== data.product_id), data]);
+      onApply(data, '');
+      setSuccess(`Selected ${data.name} from the catalog. Bag contents have not changed.`);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Lookup failed.'); }
+    finally { setLookupBusy(false); setBusy(false); }
+  }
 
   async function ask(message: string) {
     const version = ++requestVersion.current;
     setBusy(true); setError(''); setResult(null); setSuccess('');
     try {
       if (!apiUrl || !product) throw new Error('Select one of the catalog demo products above.');
-      const ids = bagNames.map(name => catalog.find(p => p.name === name)?.product_id);
+      const ids = bagIds;
       if (message.toLowerCase().includes('bag') && ids.some(id => !id)) throw new Error('The bag contains a scan without a verified catalog match. Use catalog products for personalized optimization.');
       const response = await fetch(`${apiUrl.replace(/\/$/, '')}/v2/copilot/chat`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -91,8 +111,8 @@ export default function PersonalizedCopilot({ apiUrl, currentName, bagNames, goa
     } finally { if (version === requestVersion.current) setBusy(false); }
   }
 
-  function apply(alternative: Alternative, originalName: string) {
-    onApply(alternative.product, originalName);
+  function apply(alternative: Alternative, originalId: string) {
+    onApply(alternative.product, originalId);
     setResult(null);
     setSuccess(`Applied ${alternative.product.name} to the active product and matching items in this demo bag. Your saved bag is unchanged.`);
   }
@@ -103,7 +123,15 @@ export default function PersonalizedCopilot({ apiUrl, currentName, bagNames, goa
     <div className="personal-heading"><div><span className="personal-eyebrow">Guiltless · Made for you</span>
       <h3 id="personal-heading">Good food. Better for your day.</h3>
       <p>See how {currentName} fits your goals, then choose a compatible swap.</p></div>
-      <span className="personal-badge">Demo nutrition data</span></div>
+      <span className="personal-badge">{product?.provenance?.source === 'USDA FoodData Central' ? 'USDA sourced' : 'Demo nutrition data'}</span></div>
+    <div className="personal-actions">
+      <label>Find a catalog barcode <input aria-label="Catalog barcode" inputMode="numeric" value={barcode} onChange={e => setBarcode(e.target.value)} placeholder="000000000002" /></label>
+      <button disabled={lookupBusy || !barcode.trim() || !apiUrl} onClick={findBarcode}>{lookupBusy ? 'Looking up…' : 'Find exact product'}</button>
+    </div>
+    {product?.provenance && <p className="personal-note">Source: {product.provenance.source === 'guiltless_demo_catalog' ? 'Guiltless demo catalog' : product.provenance.source}
+      {product.processing_metadata?.serving_size && ` · Serving: ${product.processing_metadata.serving_size} ${product.processing_metadata.serving_unit}`}
+      {product.provenance.retrieved_at && ` · Retrieved ${new Date(product.provenance.retrieved_at).toLocaleDateString()}`}
+      {product.provenance.source === 'USDA FoodData Central' && ' · Allergen and dietary compatibility are not verified.'}</p>}
     <div className="personal-fields">
       <label>Daily protein target (g)<input type="number" min="1" max="500" value={target} onChange={e => setTarget(Number(e.target.value))} /></label>
       <label>Protein eaten today (g)<input type="number" min="0" value={consumed} onChange={e => setConsumed(Number(e.target.value))} /></label>
@@ -133,13 +161,14 @@ export default function PersonalizedCopilot({ apiUrl, currentName, bagNames, goa
       </>}
       {alternatives.map(alternative => <article className="personal-alternative" key={alternative.product.product_id}>
         <div><h4>{alternative.product.name}</h4><p>Base {alternative.scoring.base_score} · G-Personal {alternative.scoring.personal_score} · Compatible</p>
+          {alternative.retrieval && <p className="personal-context-note">{alternative.retrieval.method === 'hybrid' ? 'Matched by product meaning and category' : 'Matched by catalog text and category'} · Safety filters applied</p>}
           <p>Base score change: {alternative.base_score_delta > 0 ? '+' : ''}{alternative.base_score_delta}</p><ul>{alternative.ranking_reasons.slice(0, 3).map(reason => <li key={reason}>{reason}</li>)}</ul></div>
-        <button className="personal-primary" onClick={() => apply(alternative, currentName)}>Apply Swap</button></article>)}
+        <button className="personal-primary" onClick={() => apply(alternative, product?.product_id ?? '')}>Apply Swap</button></article>)}
       {result.intent === 'find_swap' && !alternatives.length && !result.errors.length && <p>No compatible improving alternatives were found in this catalog.</p>}
       {result.tool_result.current_score !== undefined && <p>Bag base score: <strong>{result.tool_result.current_score} → {result.tool_result.optimized_score}</strong> · Change {result.tool_result.score_gain}</p>}
       {result.tool_result.swaps?.map((swap, index) => <article className="personal-alternative" key={`${swap.current_product.product.product_id}-${index}`}>
         <p>{swap.current_product.product.name} → <strong>{swap.alternative.product.name}</strong></p>
-        <button className="personal-primary" onClick={() => apply(swap.alternative, swap.current_product.product.name)}>Apply Swap</button></article>)}
+        <button className="personal-primary" onClick={() => apply(swap.alternative, swap.current_product.product.product_id)}>Apply Swap</button></article>)}
       <div className="personal-actions">{result.suggested_actions.filter(action => prompts[action]).map(action => <button key={action} onClick={() => ask(prompts[action])} disabled={busy}>{action.replaceAll('_', ' ')}</button>)}</div>
       <p className="personal-note">Data confidence: {Math.round(result.confidence * 100)}% · {result.grounding.data_sources.join(', ') || 'No catalog recommendation'} · Scores apply to one serving and use a demo rubric.</p>
     </div>}

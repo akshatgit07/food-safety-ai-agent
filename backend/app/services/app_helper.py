@@ -6,6 +6,7 @@ from pydantic import Field
 
 from app.domain.models import DomainModel
 from app.services.product_intelligence import explain_product
+from app.services.persistence import get_profile
 
 Screen = Literal["groceries", "product_detail", "comparison", "bag", "scan", "food_logging", "tracker"]
 GUIDE_VERSION = "recording-review-2026-09-09"
@@ -20,6 +21,7 @@ class HelperRequest(DomainModel):
     allergies: list[str] = Field(default_factory=list, max_length=30)
     # An external score has no known algorithm. Never explain it using ours.
     score_source: Literal["agent_catalog", "mobile_app"] = "agent_catalog"
+    user_id: str | None = Field(default=None, max_length=100)
 
 
 GUIDES = {
@@ -62,11 +64,15 @@ def helper_reply(request: HelperRequest, graph) -> dict:
     message = request.message.strip().lower()
     if not message:
         raise ValueError("Enter a question for the helper")
+    saved_profile = get_profile(request.user_id) if request.user_id else None
+    goal = saved_profile["goal"] if saved_profile and request.goal == "balanced nutrition" else request.goal
+    allergies = list(dict.fromkeys([*request.allergies, *(saved_profile["allergies"] if saved_profile else [])]))
     response = {
         "intent": "app_guidance", "response": "", "steps": [], "actions": [],
         "tool_result": {}, "limitations": [], "errors": [],
         "context_used": {"screen": request.screen, "product_id": request.product_id,
-                         "goal": request.goal, "score_source": request.score_source},
+                         "goal": goal, "score_source": request.score_source,
+                         "memory_used": bool(saved_profile)},
         "guide_version": GUIDE_VERSION,
     }
     # No write/commerce execution exists in this helper, even if prompted.
@@ -92,10 +98,10 @@ def helper_reply(request: HelperRequest, graph) -> dict:
         routed_message = {"explain_product": "Explain this product score", "find_swap": "Find a better alternative", "optimize_bag": "Optimize my bag"}[intent]
         result = graph.run({"message": routed_message, "product_id": request.product_id,
                             "bag_product_ids": request.bag_product_ids,
-                            "user_profile": {"primary_goal": request.goal, "allergies": request.allergies}})
+                            "user_profile": {"primary_goal": goal, "allergies": allergies}})
         response.update(intent=intent, response=result["response"], tool_result=result["tool_result"], errors=result["errors"],
                         limitations=["These are agent catalog scores, not the mobile app's existing scores.",
-                                     "Only allergies entered in this helper were used; the saved mobile profile is not connected.",
+                                     "Saved profile allergies and allergies entered here were both applied when available.",
                                      "A score does not guarantee safety; check the source and allergen information."])
         current = result["tool_result"].get("current_product")
         if current and not result["errors"]:

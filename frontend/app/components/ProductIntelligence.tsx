@@ -1,9 +1,10 @@
 'use client';
 
-import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import { errorMessage as detailMessage } from '../lib/api';
 import PersonalizedCopilot, { CatalogProduct } from './PersonalizedCopilot';
+import AppHelper from './AppHelper';
 
 type Product = {
   product_id?: string;
@@ -18,6 +19,7 @@ type JsonObject = Record<string, any>;
 
 const DEMO_PRODUCTS: Product[] = [
   {
+    product_id: 'demo-yogurt',
     name: 'Plain Greek Yogurt',
     brand: 'Daily Cultures',
     category: 'Yogurt',
@@ -25,6 +27,7 @@ const DEMO_PRODUCTS: Product[] = [
     ingredients: ['cultured milk'],
   },
   {
+    product_id: 'demo-bar',
     name: 'Frosted Snack Bar',
     brand: 'Quick Bite',
     category: 'Snack bar',
@@ -32,6 +35,7 @@ const DEMO_PRODUCTS: Product[] = [
     ingredients: ['oats', 'corn syrup', 'artificial flavor'],
   },
   {
+    product_id: 'demo-chickpeas',
     name: 'Roasted Chickpea Bites',
     brand: 'Good Crunch',
     category: 'Savory snack',
@@ -75,6 +79,23 @@ function ProductOption({ product }: { product: Product }) {
 
 export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: string; mealPlan?: JsonObject | null }) {
   const [goal, setGoal] = useState('high protein');
+  const [activeFeature, setActiveFeature] = useState(0);
+  const featureTabs = useRef<(HTMLButtonElement | null)[]>([]);
+  const features = ['Product Explainability', 'Product Comparison', 'Bag Optimization', 'Ask Guiltless'];
+
+  function openFeature(index: number, scroll = false) {
+    setActiveFeature(index);
+    if (scroll) document.getElementById('decision-features')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function followAction(action: string) {
+    if (action === 'Compare alternatives') {
+      openFeature(1, true);
+    } else {
+      setCopilotMessage(action);
+      openFeature(3, true);
+    }
+  }
   const [customProducts, setCustomProducts] = useState<Product[]>([]);
   const [scanOpen, setScanOpen] = useState(false);
   const [scanText, setScanText] = useState('Protein Oat Bar\nGood Foods\nCalories 190\nProtein 10g\nDietary Fiber 6g\nTotal Sugars 5g\nSodium 180mg\nIngredients: oats, almonds, dates');
@@ -108,6 +129,7 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
   const products = useMemo(() => [...DEMO_PRODUCTS, ...customProducts], [customProducts]);
   const currentProduct = products[explainIndex] ?? DEMO_PRODUCTS[1];
   const currentProductScore = explainResult?.score;
+  const isDemoProduct = currentProduct.product_id?.startsWith('demo-');
   const mainSwap = (bagResult?.swaps ?? [])[0] as JsonObject | undefined;
 
   function requireApiUrl() {
@@ -125,6 +147,42 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     if (!response.ok) throw new Error(detailMessage(payload, response.status));
     return payload;
   }
+
+  useEffect(() => {
+    if (!apiUrl || !currentProduct) return;
+
+    const controller = new AbortController();
+    let active = true;
+    setExplainLoading(true);
+    setExplainError(null);
+    setExplainResult(null);
+
+    fetch(`${apiUrl.replace(/\/$/, '')}/product/explain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product: currentProduct, goal }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await readJson(response);
+        if (!response.ok) throw new Error(detailMessage(payload, response.status));
+        return payload;
+      })
+      .then((payload) => {
+        if (active) setExplainResult(payload);
+      })
+      .catch((error) => {
+        if (active && error instanceof Error && error.name !== 'AbortError') setExplainError(errorMessage(error));
+      })
+      .finally(() => {
+        if (active) setExplainLoading(false);
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [apiUrl, currentProduct, goal]);
 
   function handleScanFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -267,14 +325,14 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
     }
   }
 
-  function applyPersonalizedSwap(replacement: CatalogProduct, originalName: string) {
-    const existingIndex = products.findIndex(p => p.product_id === replacement.product_id || p.name === replacement.name);
+  function applyPersonalizedSwap(replacement: CatalogProduct, originalId: string) {
+    const existingIndex = products.findIndex(p => p.product_id === replacement.product_id);
     const index = existingIndex >= 0 ? existingIndex : products.length;
     if (existingIndex < 0) {
       const nutrition = Object.fromEntries(Object.entries(replacement.nutrition).filter((entry): entry is [string, number] => typeof entry[1] === 'number'));
       setCustomProducts(current => [...current, { ...replacement, nutrition }]);
     }
-    setBagIndexes(current => current.map(i => products[i]?.name === originalName ? index : i));
+    setBagIndexes(current => current.map(i => originalId && products[i]?.product_id === originalId ? index : i));
     setExplainIndex(index); setExplainResult(null); setCompareResult(null); setBagResult(null); setCopilotResult(null);
   }
 
@@ -290,7 +348,8 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
             <strong>{currentProduct.name}</strong>
             <span style={styles.contextDivider} />
             <span>Score</span>
-            <strong style={styles.contextScore}>{currentProductScore != null ? `${currentProductScore} / 100` : 'Not scored yet'}</strong>
+            <strong style={styles.contextScore}>{currentProductScore != null ? `${currentProductScore} / 100` : explainLoading ? 'Scoring…' : 'Score unavailable'}</strong>
+            {isDemoProduct && <small style={styles.scoreSource}>Guiltless score from the demo nutrition label</small>}
           </div>
           <label style={styles.goalLabel}>
             Shared nutrition goal
@@ -301,25 +360,15 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
         <aside className="decision-snapshot" style={styles.snapshot} aria-label="Current product nutrition snapshot">
           <div style={styles.snapshotHeader}>
             <div><span style={styles.snapshotLabel}>Current decision</span><strong>{currentProduct.name}</strong></div>
-            <span style={styles.snapshotScore}>{currentProductScore != null ? `${currentProductScore} / 100` : 'Not scored yet'}</span>
+            <span style={styles.snapshotScore}>{currentProductScore != null ? `${currentProductScore} / 100` : explainLoading ? 'Scoring…' : 'Score unavailable'}</span>
           </div>
           <div style={styles.snapshotRule} />
           <strong style={styles.driverTitle}>What is driving the score</strong>
           <NutritionDriver label="Protein" value={`${currentProduct.nutrition.protein_g}g`} width={Math.min(100, currentProduct.nutrition.protein_g * 5)} />
           <NutritionDriver label="Sugar" value={`${currentProduct.nutrition.sugar_g}g`} width={Math.min(100, currentProduct.nutrition.sugar_g * 4)} caution />
           <NutritionDriver label="Fiber" value={`${currentProduct.nutrition.fiber_g}g`} width={Math.min(100, currentProduct.nutrition.fiber_g * 12)} />
-          <button type="button" style={styles.snapshotAction} onClick={() => setCopilotMessage('Compare alternatives')}>↗ Compare a healthier alternative next</button>
+          <button type="button" style={styles.snapshotAction} onClick={() => openFeature(1, true)}>↗ Compare a healthier alternative next</button>
         </aside>
-      </div>
-
-      <div className="decision-workflow" style={styles.workflow} aria-label="Guiltless AI decision workflow">
-        {['Product', 'Explain', 'Compare', 'Optimize', 'Copilot'].map((item, index) => (
-          <div key={item} style={styles.workflowItem}>
-            <span style={styles.workflowNumber}>{index + 1}</span>
-            <strong>{item}</strong>
-            {index < 4 && <span style={styles.workflowArrow}>→</span>}
-          </div>
-        ))}
       </div>
 
       <section id="scan-label" className="scan-panel" style={styles.scanPanel}>
@@ -351,27 +400,48 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
         )}
       </section>
 
-      <div className="decision-grid" style={styles.grid}>
-        <article className="decision-card" style={styles.card}>
+      <div id="decision-features" className="feature-workspace">
+        <div className="feature-workspace-heading"><div><span>YOUR DECISION WORKSPACE</span><h3>One focus. A better decision.</h3></div><p>Switch tools anytime. Your context stays with you.</p></div>
+        <div className="feature-tabs" role="tablist" aria-label="Product intelligence features">
+          {features.map((feature, index) => <button key={feature} ref={node => { featureTabs.current[index] = node; }} type="button" role="tab"
+            id={`feature-tab-${index}`} aria-controls={`feature-panel-${index}`} aria-selected={activeFeature === index} tabIndex={activeFeature === index ? 0 : -1}
+            onClick={() => openFeature(index)} onKeyDown={event => {
+              const next = event.key === 'ArrowRight' ? (index + 1) % features.length : event.key === 'ArrowLeft' ? (index + features.length - 1) % features.length : event.key === 'Home' ? 0 : event.key === 'End' ? features.length - 1 : null;
+              if (next !== null) { event.preventDefault(); openFeature(next); featureTabs.current[next]?.focus(); }
+            }}><span className="feature-tab-number">0{index + 1}</span><strong>{feature}</strong><span className="feature-tab-indicator" aria-hidden="true">↗</span></button>)}
+        </div>
+        <div className="feature-shared-context"><span><small>PRODUCT</small> {currentProduct.name}</span><span><small>GOAL</small> {goal || 'Not set'}</span><span><small>BAG</small> {bagIndexes.length} items</span>
+          <AppHelper apiUrl={apiUrl} productId={currentProduct.product_id} productName={currentProduct.name} bagIds={bagIndexes.map(index => products[index]?.product_id).filter((id): id is string => Boolean(id))} goal={goal} screen={['product_detail', 'comparison', 'bag', 'product_detail'][activeFeature]} onNavigate={action => {
+            if (action === 'open_scan') { setScanOpen(true); document.getElementById('scan-label')?.scrollIntoView({behavior: 'smooth'}); }
+            else openFeature(action === 'open_compare' ? 1 : action === 'open_bag' ? 2 : 0, true);
+          }} />
+        </div>
+      <div className="decision-panels">
+        <article id="feature-panel-0" role="tabpanel" aria-labelledby="feature-tab-0" tabIndex={0} hidden={activeFeature !== 0} className="decision-card feature-panel" style={styles.card}>
           <div style={styles.cardHeader}>
             <span style={styles.step}>01</span>
             <div><h3 style={styles.cardTitle}>Product Explainability</h3><p style={styles.cardCopy}>See the score, strengths, cautions, and goal fit.</p></div>
           </div>
-          <select style={styles.select} value={explainIndex} onChange={(event) => selectProduct(Number(event.target.value))}>
+          <div className="feature-body"><div className="feature-controls">
+          <label htmlFor="explain-product" className="feature-field-label">Choose your product</label>
+          <select id="explain-product" style={styles.select} value={explainIndex} onChange={(event) => selectProduct(Number(event.target.value))}>
             {products.map((product, index) => <option key={`${product.name}-${index}`} value={index}>{product.name}</option>)}
           </select>
           <ProductFacts product={currentProduct} />
           <button type="button" style={styles.primaryButton} onClick={explainProduct} disabled={explainLoading}>{explainLoading ? 'Explaining…' : 'Explain this product'}</button>
           <InlineError message={explainError} />
-          {explainResult && <ExplanationResult result={explainResult} onAction={setCopilotMessage} />}
+          </div><div className="feature-output" aria-live="polite">
+          {explainResult ? <ExplanationResult result={explainResult} onAction={followAction} /> : <FeatureEmpty title="Understand what’s inside" description="Choose a product and explain its score to see strengths, cautions, and your recommended next step." />}
+          </div></div>
         </article>
 
-        <div className="decision-center" style={styles.centerColumn}>
-        <article className="decision-card" style={styles.card}>
+        <article id="feature-panel-1" role="tabpanel" aria-labelledby="feature-tab-1" tabIndex={0} hidden={activeFeature !== 1} className="decision-card feature-panel" style={styles.card}>
           <div style={styles.cardHeader}>
             <span style={styles.step}>02</span>
             <div><h3 style={styles.cardTitle}>Product Comparison</h3><p style={styles.cardCopy}>Put two products head-to-head for the current goal.</p></div>
           </div>
+          <div className="feature-body"><div className="feature-controls">
+          <p className="feature-field-label">Choose two products</p>
           {compareIndexes.map((selectedIndex, position) => (
             <select
               key={position}
@@ -390,14 +460,18 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
           ))}
           <button type="button" style={styles.primaryButton} onClick={compareProducts} disabled={compareLoading}>{compareLoading ? 'Comparing…' : 'Compare products'}</button>
           <InlineError message={compareError} />
-          {compareResult && <ComparisonResult result={compareResult} products={products} />}
+          </div><div className="feature-output" aria-live="polite">
+          {compareResult ? <ComparisonResult result={compareResult} products={products} /> : <FeatureEmpty title="Make room for a better choice" description="Compare protein, sugar, fiber, and scores side by side. Your recommendation will appear here." />}
+          </div></div>
         </article>
 
-        <article className="decision-card" style={styles.card}>
+        <article id="feature-panel-2" role="tabpanel" aria-labelledby="feature-tab-2" tabIndex={0} hidden={activeFeature !== 2} className="decision-card feature-panel" style={styles.card}>
           <div style={styles.cardHeader}>
             <span style={styles.step}>03</span>
             <div><h3 style={styles.cardTitle}>Bag Optimization</h3><p style={styles.cardCopy}>Score a basket and preview practical healthier swaps.</p></div>
           </div>
+          <div className="feature-body"><div className="feature-controls">
+          <p className="feature-field-label">Build your bag</p>
           <div style={styles.checkList}>
             {products.map((product, index) => (
               <label key={`${product.name}-${index}`} style={styles.checkRow}>
@@ -408,6 +482,8 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
           </div>
           <button type="button" style={styles.primaryButton} onClick={optimizeBag} disabled={bagLoading}>{bagLoading ? 'Optimizing…' : 'Optimize this bag'}</button>
           <InlineError message={bagError} />
+          </div><div className="feature-output" aria-live="polite">
+          {!bagResult && <FeatureEmpty title="A stronger bag starts here" description="Select your items, then preview your before-and-after score and suggested swaps." />}
           {bagResult && (
             <div style={styles.optimizerResult}>
               <div style={styles.scoreSummary}>
@@ -429,14 +505,16 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
               {appliedSwap && <div style={styles.successNotice}>✓ Applied in this demo: {appliedSwap}</div>}
             </div>
           )}
+          </div></div>
         </article>
-        </div>
 
-        <article className="decision-card" style={styles.card}>
+        <div id="feature-panel-3" role="tabpanel" aria-labelledby="feature-tab-3" tabIndex={0} hidden={activeFeature !== 3} className="feature-panel-group">
+        <article className="decision-card feature-panel" style={styles.card}>
           <div style={styles.cardHeader}>
             <span style={styles.step}>04</span>
             <div><h3 style={styles.cardTitle}>Ask Guiltless Copilot</h3><p style={styles.cardCopy}>Your product, goal, and bag context travel with every question.</p></div>
           </div>
+          <div className="feature-body"><div className="feature-controls">
           <div style={styles.contextPanel}>
             <span style={styles.contextLabel}>Current decision context</span>
             <div style={styles.contextGrid}>
@@ -452,10 +530,12 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
             ))}
           </div>
           <form style={styles.form} onSubmit={askCopilot}>
-            <textarea style={styles.textarea} rows={4} value={copilotMessage} onChange={(event) => setCopilotMessage(event.target.value)} />
+            <textarea aria-label="Ask Guiltless a question" style={styles.textarea} rows={4} value={copilotMessage} onChange={(event) => setCopilotMessage(event.target.value)} />
             <button type="submit" style={styles.primaryButton} disabled={copilotLoading}>{copilotLoading ? 'Thinking with context…' : 'Ask the copilot'}</button>
           </form>
           <InlineError message={copilotError} />
+          </div><div className="feature-output" aria-live="polite">
+          {!copilotResult && <FeatureEmpty title="Let’s figure out your next step" description="Ask about your product, plan a meal, or improve your bag. Guiltless uses the context you’ve already shared." />}
           {copilotResult && (
             <div style={styles.resultBox}>
               <div style={styles.intentRow}>
@@ -478,10 +558,12 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
               )}
             </div>
           )}
+          </div></div>
         </article>
+      <PersonalizedCopilot apiUrl={apiUrl} currentName={currentProduct.name} currentId={currentProduct.product_id} bagIds={bagIndexes.map(index => products[index]?.product_id)} goal={goal} onApply={applyPersonalizedSwap} />
+        </div>
       </div>
-
-      <PersonalizedCopilot apiUrl={apiUrl} currentName={currentProduct.name} bagNames={bagIndexes.map(index => products[index]?.name).filter(Boolean)} goal={goal} onApply={applyPersonalizedSwap} />
+      </div>
 
       <footer style={styles.integrationFooter}>
         <span>Designed to plug into:</span>
@@ -489,6 +571,10 @@ export default function ProductIntelligence({ apiUrl, mealPlan }: { apiUrl?: str
       </footer>
     </section>
   );
+}
+
+function FeatureEmpty({ title, description }: { title: string; description: string }) {
+  return <div className="feature-empty"><span aria-hidden="true">✳</span><h4>{title}</h4><p>{description}</p><small>Your results will appear here</small></div>;
 }
 
 function ProductFacts({ product }: { product: Product }) {
@@ -578,6 +664,7 @@ const styles: Record<string, any> = {
   activeContext: { display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap', borderRadius: 14, padding: '11px 14px', background: '#0f4530', color: '#b8d1c2', fontSize: 12 },
   contextDivider: { width: 1, height: 22, background: '#3b6b57' },
   contextScore: { color: '#baf0c2' },
+  scoreSource: { color: '#9ec8ac', fontSize: 9, lineHeight: 1.3 },
   goalLabel: { display: 'flex', alignItems: 'center', gap: 10, color: '#d1e8db', fontWeight: 800, fontSize: 12 },
   input: { minWidth: 190, border: '1px solid #3b6b57', borderRadius: 10, padding: '8px 11px', background: '#0f4530', color: '#fff', fontSize: 13 },
   snapshot: { display: 'flex', flexDirection: 'column', gap: 13, borderRadius: 20, padding: 20, background: '#0e4733', boxShadow: 'inset 0 0 0 1px rgba(186,240,194,.06)' },

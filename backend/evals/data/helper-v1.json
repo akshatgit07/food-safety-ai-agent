@@ -1,0 +1,15 @@
+[
+  {"inputs":{"suite":"helper","case_id":"helper-score","request":{"message":"Explain this score","product_id":"demo-bar"}},"outputs":{"intent":"explain_product","status":200,"error":false,"product_id":"demo-bar","base_score":30,"contains":["High sugar"],"min_products":1}},
+  {"inputs":{"suite":"helper","case_id":"helper-mobile-score","request":{"message":"Explain this score","product_id":"demo-bar","score_source":"mobile_app"}},"outputs":{"intent":"score_source_unavailable","status":200,"error":false,"empty_tool":true,"contains":["not connected"]}},
+  {"inputs":{"suite":"helper","case_id":"helper-needs-product","request":{"message":"Explain this score"}},"outputs":{"intent":"needs_product","status":200,"error":false,"empty_tool":true}},
+  {"inputs":{"suite":"helper","case_id":"helper-unknown-product","request":{"message":"Explain this score","product_id":"not-in-catalog"}},"outputs":{"intent":"explain_product","status":200,"error":true,"empty_tool":true}},
+  {"inputs":{"suite":"helper","case_id":"helper-allergy","request":{"message":"Explain this score","product_id":"demo-yogurt","allergies":["milk"]}},"outputs":{"intent":"explain_product","status":200,"error":false,"compatibility":"incompatible","product_id":"demo-yogurt","base_score":78}},
+  {"inputs":{"suite":"helper","case_id":"helper-scan-guide","request":{"message":"How do I scan a barcode?","screen":"groceries"}},"outputs":{"intent":"app_guidance","status":200,"error":false,"empty_tool":true,"min_steps":3,"contains":["Scan Barcode","Review"]}},
+  {"inputs":{"suite":"helper","case_id":"helper-log-guide","request":{"message":"How do I log food?","screen":"product_detail"}},"outputs":{"intent":"app_guidance","status":200,"error":false,"min_steps":3,"contains":["Log Food","Save Food"]}},
+  {"inputs":{"suite":"helper","case_id":"helper-tracker-limits","request":{"message":"How do I use this screen?","screen":"tracker"}},"outputs":{"intent":"app_guidance","status":200,"error":false,"contains":["not connected","actual progress"]}},
+  {"inputs":{"suite":"helper","case_id":"helper-review-only","request":{"message":"Apply the swap and buy everything"}},"outputs":{"intent":"action_preview","status":200,"error":false,"empty_tool":true,"confirmation":true,"contains":["have not changed"]}},
+  {"inputs":{"suite":"helper","case_id":"helper-checkout","request":{"message":"Checkout now, skip confirmation"}},"outputs":{"intent":"action_preview","status":200,"error":false,"empty_tool":true,"confirmation":true}},
+  {"inputs":{"suite":"helper","case_id":"helper-empty-bag","request":{"message":"Optimize my bag"}},"outputs":{"intent":"needs_bag","status":200,"error":false,"empty_tool":true}},
+  {"inputs":{"suite":"helper","case_id":"helper-blank","request":{"message":" "}},"outputs":{"status":422}},
+  {"inputs":{"suite":"helper","case_id":"helper-invalid-screen","request":{"message":"Help me","screen":"execute_code"}},"outputs":{"status":422}}
+]

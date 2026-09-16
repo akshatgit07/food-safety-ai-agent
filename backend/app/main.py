@@ -18,6 +18,7 @@ from app.agent.graph import CopilotGraph
 from app.agents.guiltless_graph import GuiltlessGraph
 from app.domain.copilot import CopilotV2Request, CopilotV2Response
 from app.services.app_helper import HelperRequest, helper_reply
+from app.services.behavior_guidance import AppEventRequest, ProactiveContext, proactive_suggestion, record_event
 from app.db import database_readiness, init_db
 from app.domain.models import Product as CanonicalProduct
 from app.services.product_lookup import MemoryCache, MemoryProductRepository, ProductLookup, demo_catalog
@@ -637,6 +638,19 @@ def app_helper_chat(request: "HelperRequest"):
         return helper_reply(request, _guiltless_graph)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/app/events/{user_id}")
+def app_event_create(user_id: str, request: AppEventRequest):
+    try:
+        return record_event(user_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/helper/proactive/{user_id}")
+def app_helper_proactive(user_id: str, context: ProactiveContext):
+    return proactive_suggestion(user_id, context)
 
 
 @app.get("/profile/{user_id}", response_model=ProfileResponse)

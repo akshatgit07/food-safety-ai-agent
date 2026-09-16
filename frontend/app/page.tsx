@@ -252,6 +252,12 @@ export default function Home() {
         </section>
         </section>
 
+        <nav className="workspace-next-tabs" aria-label="More AI workspace tools">
+          <span>Continue below</span>
+          <a href="#coach-mode"><b>01</b> Coach / Trainer Mode</a>
+          <a href="#product-layer"><b>02</b> Memory, Bag &amp; Checkout</a>
+        </nav>
+
         <Phase3Planning apiUrl={apiUrl} shoppingList={shoppingList} onWorkoutPlan={setLatestWorkoutPlan} />
 
         <Phase4ProductLayer apiUrl={apiUrl} latestMealPlan={mealPlan} latestWorkoutPlan={latestWorkoutPlan} />
