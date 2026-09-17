@@ -1,7 +1,17 @@
 .env
+.env.local
 __pycache__/
 *.pyc
 .venv/
 logs/
 *.db
 chroma_db/
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Xcode per-user workspace state
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store

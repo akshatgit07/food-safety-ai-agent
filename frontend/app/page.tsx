@@ -2,10 +2,14 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
+import { apiBase, errorMessage, readJson } from './lib/api';
+import ProductIntelligence from './components/ProductIntelligence';
+import Phase3Planning from './components/Phase3Planning';
+import Phase4ProductLayer from './components/Phase4ProductLayer';
+
 type Message = { role: 'user' | 'assistant'; text: string };
 type MealPlan = Record<string, any>;
 type ShoppingList = Record<string, any>;
-
 function asArray<T = any>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
@@ -48,6 +52,7 @@ export default function Home() {
   const [shoppingList, setShoppingList] = useState<ShoppingList | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
+  const [latestWorkoutPlan, setLatestWorkoutPlan] = useState<Record<string, any> | null>(null);
 
   useEffect(() => {
     async function checkHealth() {
@@ -57,7 +62,7 @@ export default function Home() {
       }
 
       try {
-        const response = await fetch(`${apiUrl}/health`);
+        const response = await fetch(`${apiBase(apiUrl)}/health`);
         if (!response.ok) throw new Error(`Backend returned ${response.status}`);
         setConnected(true);
         setStatusText('Connected to FastAPI on Render.');
@@ -77,15 +82,6 @@ export default function Home() {
     ? `${grounding.grounded_ingredients ?? 0}/${grounding.total_ingredients ?? 0} ingredients grounded • ${grounding.source ?? 'model estimate'}`
     : null;
 
-  async function readJson(response: Response) {
-    const text = await response.text();
-    try {
-      return text ? JSON.parse(text) : {};
-    } catch {
-      return { detail: text || 'Non-JSON response from backend' };
-    }
-  }
-
   async function submitChat(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!apiUrl || !input.trim() || isSending) return;
@@ -97,13 +93,13 @@ export default function Home() {
     setError(null);
 
     try {
-      const response = await fetch(`${apiUrl}/chat`, {
+      const response = await fetch(`${apiBase(apiUrl)}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: question }),
       });
       const payload = await readJson(response);
-      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      if (!response.ok) throw new Error(errorMessage(payload, response.status));
       setMessages((current) => [...current, { role: 'assistant', text: payload.response || 'No response returned.' }]);
     } catch (chatError) {
       const message = chatError instanceof Error ? chatError.message : 'Unable to call chat endpoint';
@@ -123,13 +119,13 @@ export default function Home() {
     setShoppingList(null);
 
     try {
-      const response = await fetch(`${apiUrl}/meal-plan`, {
+      const response = await fetch(`${apiBase(apiUrl)}/meal-plan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       });
       const payload = await readJson(response);
-      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      if (!response.ok) throw new Error(errorMessage(payload, response.status));
       setMealPlan(asObject(payload));
     } catch (planError) {
       setError(planError instanceof Error ? planError.message : 'Unable to generate meal plan');
@@ -145,13 +141,13 @@ export default function Home() {
     setError(null);
 
     try {
-      const response = await fetch(`${apiUrl}/shopping-list`, {
+      const response = await fetch(`${apiBase(apiUrl)}/shopping-list`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ meal_plan: mealPlan, servings: 1 }),
       });
       const payload = await readJson(response);
-      if (!response.ok) throw new Error(payload?.detail || `Backend returned ${response.status}`);
+      if (!response.ok) throw new Error(errorMessage(payload, response.status));
       setShoppingList(asObject(payload));
     } catch (listError) {
       setError(listError instanceof Error ? listError.message : 'Unable to generate shopping list');
@@ -174,22 +170,39 @@ export default function Home() {
   }
 
   return (
-    <main style={styles.page}>
-      <section style={styles.shell}>
-        <header style={styles.header}>
-          <div>
-            <p style={styles.eyebrow}>Guiltless AI Prototype</p>
-            <h1 style={styles.h1}>Nutrition Copilot</h1>
-            <p style={styles.subtitle}>Chat, generate meal plans, ground nutrition with USDA data, and build grocery lists.</p>
-          </div>
-          <div style={styles.statusPill}>
-            <span style={{ ...styles.dot, background: connected ? '#22c55e' : '#f59e0b' }} />
-            {statusText}
-          </div>
+    <main className="app-root">
+      <aside className="app-sidebar">
+        <a className="app-brand" href="#decision" aria-label="Guiltless home"><span>G</span><strong>Guiltless</strong></a>
+        <nav className="app-nav" aria-label="Primary navigation">
+          <a className="active" href="#decision"><span>⌁</span>Decision engine</a>
+          <a href="#workspace"><span>✦</span>AI workspace</a>
+          <a href="#coach-mode"><span>↗</span>Coach mode</a>
+          <a href="#product-layer"><span>◉</span>Memory layer</a>
+          <a href="#meal-plan"><span>◫</span>Meal plan</a>
+          <a href="#shopping-list"><span>✓</span>Shopping list</a>
+        </nav>
+        <div className="sidebar-status">
+          <span className={connected ? 'status-dot connected' : 'status-dot'} />
+          <div><strong>{connected ? 'Backend online' : 'Connecting'}</strong><small>{statusText}</small></div>
+        </div>
+      </aside>
+
+      <section className="app-canvas">
+        <header className="app-topbar">
+          <div className="mobile-brand"><span>G</span><strong>Guiltless</strong></div>
+          <div><p>Nutrition intelligence</p><strong>Good afternoon</strong></div>
+          <div className="topbar-actions"><span className="live-pill"><i />Live demo</span><a href="#scan-label">Scan a label <b>→</b></a></div>
         </header>
 
         {error && <div style={styles.error}>{error}</div>}
 
+        <ProductIntelligence apiUrl={apiUrl} mealPlan={mealPlan} />
+
+        <section id="workspace" className="support-workspace">
+          <div className="support-heading">
+            <div><p style={styles.eyebrow}>AI workspace</p><h2 style={styles.h2}>Plan the rest of your day</h2></div>
+            <p style={styles.muted}>Use the same nutrition context for quick questions, meal planning, and your grocery list.</p>
+          </div>
         <section style={styles.grid}>
           <div style={styles.card}>
             <div style={styles.cardHeader}>
@@ -229,7 +242,7 @@ export default function Home() {
               <label style={styles.label}>Diet<input style={styles.input} value={form.diet} onChange={(e) => setForm({ ...form, diet: e.target.value })} /></label>
               <label style={styles.label}>Days<input style={styles.input} type="number" min={1} max={7} value={form.days} onChange={(e) => setForm({ ...form, days: Number(e.target.value) })} /></label>
               <label style={styles.label}>Meals / day<input style={styles.input} type="number" min={1} max={6} value={form.meals_per_day} onChange={(e) => setForm({ ...form, meals_per_day: Number(e.target.value) })} /></label>
-              <label style={styles.label}>Calories<input style={styles.input} type="number" value={form.calorie_target} onChange={(e) => setForm({ ...form, calorie_target: Number(e.target.value) })} /></label>
+              <label style={styles.label}>Calories<input style={styles.input} type="number" min={800} max={6000} step={50} value={form.calorie_target} onChange={(e) => setForm({ ...form, calorie_target: Number(e.target.value) })} /></label>
             </div>
             <div style={styles.actions}>
               <button type="button" onClick={generateMealPlan} style={styles.primaryButton} disabled={loadingPlan}>{loadingPlan ? 'Generating…' : 'Generate meal plan'}</button>
@@ -237,9 +250,20 @@ export default function Home() {
             </div>
           </div>
         </section>
+        </section>
+
+        <nav className="workspace-next-tabs" aria-label="More AI workspace tools">
+          <span>Continue below</span>
+          <a href="#coach-mode"><b>01</b> Coach / Trainer Mode</a>
+          <a href="#product-layer"><b>02</b> Memory, Bag &amp; Checkout</a>
+        </nav>
+
+        <Phase3Planning apiUrl={apiUrl} shoppingList={shoppingList} onWorkoutPlan={setLatestWorkoutPlan} />
+
+        <Phase4ProductLayer apiUrl={apiUrl} latestMealPlan={mealPlan} latestWorkoutPlan={latestWorkoutPlan} />
 
         {mealPlan && (
-          <section style={styles.section}>
+          <section id="meal-plan" style={styles.section}>
             <div style={styles.sectionHeader}>
               <div>
                 <h2 style={styles.h2}>Your Meal Plan</h2>
@@ -291,7 +315,7 @@ export default function Home() {
         )}
 
         {shoppingList && (
-          <section style={styles.section}>
+          <section id="shopping-list" style={styles.section}>
             <div style={styles.sectionHeader}>
               <div>
                 <h2 style={styles.h2}>Shopping List</h2>
@@ -323,10 +347,10 @@ export default function Home() {
 }
 
 const styles: Record<string, any> = {
-  page: { minHeight: '100vh', background: 'linear-gradient(180deg,#f8fafc,#eef2ff)', padding: '32px 16px', fontFamily: 'Inter,Arial,sans-serif' },
+  page: { minHeight: '100vh', background: 'linear-gradient(180deg,#f8fafc,#ecfdf5)', padding: '32px 16px', fontFamily: 'Inter,Arial,sans-serif' },
   shell: { maxWidth: '1280px', margin: '0 auto' },
   header: { display: 'flex', justifyContent: 'space-between', gap: 24, alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap' },
-  eyebrow: { margin: 0, color: '#4f46e5', fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', fontSize: 12 },
+  eyebrow: { margin: 0, color: '#047857', fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', fontSize: 12 },
   h1: { margin: '8px 0', fontSize: 42, color: '#0f172a' },
   h2: { margin: 0, fontSize: 24, color: '#0f172a' },
   subtitle: { color: '#475569', fontSize: 18, maxWidth: 760, lineHeight: 1.6 },
@@ -341,7 +365,7 @@ const styles: Record<string, any> = {
   bubble: { maxWidth: '82%', borderRadius: 18, padding: '14px 16px', boxShadow: '0 8px 18px rgba(15,23,42,.05)' },
   role: { display: 'block', textTransform: 'uppercase', letterSpacing: '.08em', fontSize: 11, marginBottom: 6 },
   messageText: { margin: 0, whiteSpace: 'pre-wrap', lineHeight: 1.6 },
-  loading: { color: '#4f46e5', fontWeight: 700 },
+  loading: { color: '#047857', fontWeight: 700 },
   chatForm: { borderTop: '1px solid #e2e8f0', padding: 20, display: 'flex', flexDirection: 'column', gap: 12 },
   textarea: { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 14, padding: 14, fontSize: 15, resize: 'vertical' },
   formGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, padding: 22 },
@@ -349,7 +373,7 @@ const styles: Record<string, any> = {
   input: { border: '1px solid #cbd5e1', borderRadius: 12, padding: '11px 12px', fontSize: 15 },
   actions: { display: 'flex', gap: 12, padding: '0 22px 22px', flexWrap: 'wrap' },
   primaryButton: { background: '#111827', color: '#fff', border: 0, borderRadius: 999, padding: '12px 18px', fontWeight: 800, cursor: 'pointer' },
-  secondaryButton: { background: '#4f46e5', color: '#fff', border: 0, borderRadius: 999, padding: '12px 18px', fontWeight: 800, cursor: 'pointer' },
+  secondaryButton: { background: '#047857', color: '#fff', border: 0, borderRadius: 999, padding: '12px 18px', fontWeight: 800, cursor: 'pointer' },
   section: { marginTop: 28, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 22, padding: 24, boxShadow: '0 18px 45px rgba(15,23,42,.05)' },
   sectionHeader: { display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginBottom: 20 },
   badge: { background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', borderRadius: 999, padding: '8px 12px', fontSize: 13, fontWeight: 800 },
@@ -364,7 +388,7 @@ const styles: Record<string, any> = {
   estimateBadge: { background: '#fff7ed', color: '#c2410c', borderRadius: 999, padding: '5px 8px', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap' },
   metrics: { display: 'flex', flexWrap: 'wrap', gap: 10, color: '#475569', fontSize: 13, marginTop: 12 },
   chips: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 },
-  chip: { background: '#eef2ff', color: '#4338ca', borderRadius: 999, padding: '6px 9px', fontSize: 12, fontWeight: 700 },
+  chip: { background: '#ecfdf5', color: '#047857', borderRadius: 999, padding: '6px 9px', fontSize: 12, fontWeight: 700 },
   pre: { background: '#0f172a', color: '#e2e8f0', borderRadius: 16, padding: 16, overflowX: 'auto', whiteSpace: 'pre-wrap' },
   shoppingGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 16 },
   shoppingCard: { border: '1px solid #e2e8f0', borderRadius: 16, padding: 16, background: '#f8fafc' },

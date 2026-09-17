@@ -1,12 +1,15 @@
-fastapi
-uvicorn
-langgraph
-langchain
-openai
-chromadb
-sqlalchemy
-psycopg2-binary
-python-dotenv
-loguru
-requests
-pydantic
+# Pinned to major versions so a Render rebuild cannot silently pick up a breaking
+# release. LangGraph orchestrates the existing internal services; no vector
+# database or separate graph server is required.
+langgraph>=1.0,<2.0
+langsmith>=0.4,<1.0
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.8,<3.0
+openai>=1.40,<4.0
+sqlalchemy>=2.0,<3.0
+psycopg2-binary>=2.9,<3.0
+requests>=2.32,<3.0
+python-dotenv>=1.0,<2.0
+# Required by fastapi.testclient (starlette) in the backend test suite.
+httpx>=0.27,<1.0

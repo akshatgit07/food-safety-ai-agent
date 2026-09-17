@@ -5,6 +5,13 @@ from typing import Any
 from app.services.product_intelligence import explain_product
 
 
+def _as_number(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def optimize_bag(items: list[dict[str, Any]], goal: str = "balanced nutrition") -> dict[str, Any]:
     scored = [explain_product(item, goal) for item in items]
     current_score = round(sum(item["score"] for item in scored) / len(scored)) if scored else 0
@@ -18,10 +25,10 @@ def optimize_bag(items: list[dict[str, Any]], goal: str = "balanced nutrition") 
         improved["name"] = f"Healthier {original.get('name', 'alternative')}"
         improved["nutrition"] = {
             **nutrition,
-            "sugar_g": max(0, float(nutrition.get("sugar_g") or 0) - 6),
-            "fiber_g": float(nutrition.get("fiber_g") or 0) + 3,
-            "protein_g": float(nutrition.get("protein_g") or 0) + 4,
-            "sodium_mg": max(0, float(nutrition.get("sodium_mg") or 0) - 100),
+            "sugar_g": max(0, _as_number(nutrition.get("sugar_g")) - 6),
+            "fiber_g": _as_number(nutrition.get("fiber_g")) + 3,
+            "protein_g": _as_number(nutrition.get("protein_g")) + 4,
+            "sodium_mg": max(0, _as_number(nutrition.get("sodium_mg")) - 100),
         }
         improved_explanation = explain_product(improved, goal)
         swaps.append(

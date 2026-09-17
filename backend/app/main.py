@@ -1,20 +1,69 @@
+from __future__ import annotations
+
 import json
 import os
-from typing import Any
+from contextlib import asynccontextmanager
+import asyncio
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
+from langsmith.wrappers import wrap_openai
+from app.observability import observed, flush_traces
 from pydantic import BaseModel, Field
 
+from app.agent import CopilotRouter
+from app.agent.graph import CopilotGraph
+from app.agents.guiltless_graph import GuiltlessGraph
+from app.domain.copilot import CopilotV2Request, CopilotV2Response
+from app.services.app_helper import HelperRequest, helper_reply
+from app.services.behavior_guidance import AppEventRequest, ProactiveContext, proactive_suggestion, record_event
+from app.db import database_readiness, init_db
+from app.domain.models import Product as CanonicalProduct
+from app.services.product_lookup import MemoryCache, MemoryProductRepository, ProductLookup, demo_catalog
+from app.services.product_retriever import LocalCandidateRetriever
+from app.services.catalog_repository import SqlProductRepository, CatalogCandidateRetriever
 from app.services.bag_optimizer import optimize_bag
-from app.services.copilot_router import build_context_prompt, detect_intent
+from app.services.coach_planner import build_client_plan
+from app.services.commerce import prepare_checkout, prepare_instacart_checkout
+from app.services.label_scanner import scan_label
+from app.services.persistence import (
+    DEMO_USER_ID,
+    ClientNotFound,
+    add_bag_item,
+    clear_bag,
+    create_or_update_client,
+    get_bag,
+    get_checkout,
+    get_client as get_client_profile,
+    get_client_plans,
+    get_profile,
+    get_user_plans,
+    list_clients,
+    load_user_memory,
+    save_client_plan,
+    save_copilot_message,
+    save_plan_for_client,
+    save_scan_history,
+    save_user_plan,
+    update_profile,
+)
 from app.services.product_intelligence import compare_products, explain_product
+from app.services.workout_planner import build_workout_plan
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    await asyncio.to_thread(init_db)
+    yield
+    await asyncio.to_thread(flush_traces)
+
 
 app = FastAPI(
     title="Food Safety AI Agent",
-    description="Nutrition chat, meal planning, shopping-list APIs, product explainability, and bag optimization.",
-    version="0.3.0",
+    description="Nutrition chat, label scanning, product explainability, bag optimization, and meal-planning APIs.",
+    version="0.6.0",
+    lifespan=lifespan,
 )
 
 allowed_origins = [
@@ -43,14 +92,16 @@ class ChatResponse(BaseModel):
 class ContextChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     context: dict[str, Any] = Field(default_factory=dict)
+    user_id: Optional[str] = Field(default=None, max_length=100)
+    load_memory: bool = False
 
 
 class MealPlanRequest(BaseModel):
     days: int = Field(default=5, ge=1, le=7)
     goal: str = "balanced nutrition"
     diet: str = "no restriction"
-    allergies: list[str] = []
-    calorie_target: int | None = Field(default=None, ge=800, le=6000)
+    allergies: list[str] = Field(default_factory=list)
+    calorie_target: Optional[int] = Field(default=None, ge=800, le=6000)
     meals_per_day: int = Field(default=3, ge=1, le=6)
 
 
@@ -70,8 +121,307 @@ class ProductCompareRequest(BaseModel):
 
 
 class BagOptimizeRequest(BaseModel):
-    items: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = Field(default_factory=list)
     goal: str = "balanced nutrition"
+
+
+class LabelScanRequest(BaseModel):
+    label_text: Optional[str] = Field(default=None, max_length=12000)
+    image_data_url: Optional[str] = Field(default=None, max_length=6_000_000)
+    product_name: Optional[str] = Field(default=None, max_length=100)
+    brand: Optional[str] = Field(default=None, max_length=100)
+    user_id: str = Field(default=DEMO_USER_ID, max_length=100)
+
+
+class WorkoutPlanRequest(BaseModel):
+    goal: str = Field(default="general fitness", min_length=1, max_length=100)
+    days_per_week: int = Field(default=3, ge=1, le=7)
+    equipment: list[str] = Field(default_factory=lambda: ["bodyweight"])
+    experience_level: str = Field(default="beginner", max_length=50)
+    limitations: list[str] = Field(default_factory=list)
+    session_minutes: int = Field(default=60, ge=20, le=120)
+
+
+class CoachClientPlanRequest(BaseModel):
+    client_id: Optional[str] = Field(default=None, max_length=36)
+    client_name: str = Field(default="Demo Client", min_length=1, max_length=100)
+    goal: str = Field(default="general fitness", min_length=1, max_length=100)
+    diet: str = Field(default="balanced", max_length=100)
+    allergies: list[str] = Field(default_factory=list)
+    days_per_week: int = Field(default=3, ge=1, le=7)
+    equipment: list[str] = Field(default_factory=lambda: ["bodyweight"])
+    calorie_target: int = Field(default=2200, ge=800, le=6000)
+    experience_level: str = Field(default="beginner", max_length=50)
+    limitations: list[str] = Field(default_factory=list)
+    session_minutes: int = Field(default=60, ge=20, le=120)
+
+
+class CheckoutPrepareRequest(BaseModel):
+    client_id: Optional[str] = Field(default=None, max_length=36)
+    retailer: str = Field(default="preferred retailer", max_length=100)
+    shopping_list: Optional[dict[str, Any]] = None
+    shopping_strategy: Optional[dict[str, Any]] = None
+    items: list[Any] = Field(default_factory=list)
+    user_id: Optional[str] = Field(default=None, max_length=100)
+
+
+class ProfileUpdateRequest(BaseModel):
+    goal: str = Field(default="balanced nutrition", max_length=100)
+    diet: str = Field(default="no restriction", max_length=100)
+    allergies: list[str] = Field(default_factory=list)
+    disliked_foods: list[str] = Field(default_factory=list)
+    budget: str = Field(default="flexible", max_length=100)
+    preferred_store: str = Field(default="Instacart", max_length=100)
+    training_days: int = Field(default=3, ge=1, le=7)
+    equipment: list[str] = Field(default_factory=list)
+    calorie_target: int = Field(default=2200, ge=800, le=6000)
+
+
+class BagAddRequest(BaseModel):
+    product: dict[str, Any]
+    quantity: int = Field(default=1, ge=1, le=99)
+
+
+class PlanSaveRequest(BaseModel):
+    plan: dict[str, Any]
+
+
+class CoachClientCreateRequest(BaseModel):
+    client_name: str = Field(default="Demo Client", min_length=1, max_length=100)
+    goal: str = Field(default="general fitness", max_length=100)
+    diet: str = Field(default="balanced", max_length=100)
+    allergies: list[str] = Field(default_factory=list)
+    days_per_week: int = Field(default=3, ge=1, le=7)
+    equipment: list[str] = Field(default_factory=list)
+    calorie_target: int = Field(default=2200, ge=800, le=6000)
+
+
+class InstacartCheckoutRequest(BaseModel):
+    user_id: str = Field(default=DEMO_USER_ID, max_length=100)
+    items: list[Any] = Field(default_factory=list)
+    shopping_list: Optional[dict[str, Any]] = None
+
+
+# --- Response models ------------------------------------------------------
+# Declared field-for-field against the shapes these endpoints already returned, so
+# adding response_model documents the contract without dropping any existing key.
+
+
+class RootResponse(BaseModel):
+    status: str
+    project: str
+
+
+class HealthResponse(BaseModel):
+    healthy: bool
+
+
+class ExerciseModel(BaseModel):
+    name: str
+    sets: int
+    reps: str
+    notes: str
+
+
+class WorkoutDayModel(BaseModel):
+    day: int
+    focus: str
+    exercises: list[ExerciseModel]
+
+
+class WorkoutPlanResponse(BaseModel):
+    summary: str
+    weekly_split: list[WorkoutDayModel]
+    progression_notes: str
+    safety_notes: str
+    guidance_disclaimer: str
+
+
+class NutritionPlanModel(BaseModel):
+    summary: str
+    calorie_target: int
+    protein_target_g: int
+    meal_structure: list[str]
+    diet: str
+    allergy_guidance: str
+    guidance_disclaimer: str
+
+
+class StarterItemModel(BaseModel):
+    name: str
+    quantity: str
+    category: str
+
+
+class ShoppingStrategyModel(BaseModel):
+    summary: str
+    priority_categories: list[str]
+    weekly_prep: list[str]
+    starter_items: list[StarterItemModel]
+    checkout_action: str
+
+
+class PlanPersistenceModel(BaseModel):
+    profile_id: str
+    plan_id: str
+    saved_at: str
+
+
+class CoachClientPlanResponse(BaseModel):
+    client_name: str
+    goal: str
+    nutrition_plan: NutritionPlanModel
+    workout_plan: WorkoutPlanResponse
+    shopping_strategy: ShoppingStrategyModel
+    coach_notes: list[str]
+    persistence: PlanPersistenceModel
+
+
+class CheckoutItemModel(BaseModel):
+    name: str
+    quantity: str
+    category: str
+
+
+class CheckoutPrepareResponse(BaseModel):
+    checkout_id: str
+    user_id: Optional[str] = None
+    client_id: Optional[str] = None
+    checkout_provider: str
+    retailer: str
+    status: str
+    item_count: int
+    items: list[CheckoutItemModel]
+    checkout_url: Optional[str] = None
+    created_at: str
+    next_action: str
+
+
+class CheckoutSessionResponse(BaseModel):
+    checkout_id: str
+    user_id: Optional[str] = None
+    client_id: Optional[str] = None
+    checkout_provider: str
+    status: str
+    item_count: int
+    items: list[CheckoutItemModel]
+    checkout_url: Optional[str] = None
+    created_at: str
+
+
+class InstacartCheckoutResponse(BaseModel):
+    checkout_provider: str
+    status: str
+    checkout_url: str
+    items: list[CheckoutItemModel]
+    checkout_id: str
+
+
+class CopilotChatResponse(BaseModel):
+    intent: str
+    response: str
+    suggested_actions: list[str]
+    tool_result: Optional[Any] = None
+    mode: str
+    context_used: dict[str, Any]
+    routing_error: Optional[str] = None
+
+
+class ProfileResponse(BaseModel):
+    user_id: str
+    goal: str
+    diet: str
+    allergies: list[Any]
+    disliked_foods: list[Any]
+    budget: str
+    preferred_store: str
+    training_days: int
+    equipment: list[Any]
+    calorie_target: int
+    updated_at: str
+
+
+class BagItemModel(BaseModel):
+    id: str
+    product_id: Optional[str] = None
+    product: dict[str, Any]
+    quantity: int
+    created_at: str
+
+
+class BagAddedModel(BaseModel):
+    id: str
+    product_id: Optional[str] = None
+    product: dict[str, Any]
+    quantity: int
+
+
+class BagResponse(BaseModel):
+    user_id: str
+    items: list[BagItemModel]
+    count: int
+
+
+class BagAddResponse(BaseModel):
+    user_id: str
+    added: BagAddedModel
+    items: list[BagItemModel]
+
+
+class BagClearResponse(BaseModel):
+    user_id: str
+    cleared: int
+    items: list[BagItemModel]
+
+
+class SavedPlanModel(BaseModel):
+    id: str
+    plan: dict[str, Any]
+    created_at: str
+
+
+class PlansResponse(BaseModel):
+    user_id: str
+    meal_plans: list[SavedPlanModel]
+    workout_plans: list[SavedPlanModel]
+
+
+class PlanSaveResponse(BaseModel):
+    id: str
+    type: str
+    user_id: str
+    plan: dict[str, Any]
+
+
+class CoachClientModel(BaseModel):
+    id: str
+    client_name: str
+    goal: str
+    diet: str
+    allergies: list[Any]
+    days_per_week: int
+    equipment: list[Any]
+    calorie_target: int
+    created_at: str
+    updated_at: str
+
+
+class CoachClientListResponse(BaseModel):
+    clients: list[CoachClientModel]
+    count: int
+
+
+class ClientPlanRecordModel(BaseModel):
+    id: str
+    client_id: str
+    plan: dict[str, Any]
+    created_at: str
+
+
+class ClientPlanListResponse(BaseModel):
+    client_id: str
+    plans: list[ClientPlanRecordModel]
+    count: int
 
 
 def get_client() -> OpenAI:
@@ -81,9 +431,10 @@ def get_client() -> OpenAI:
             status_code=503,
             detail="OPENAI_API_KEY is not configured on the backend.",
         )
-    return OpenAI(api_key=api_key)
+    return wrap_openai(OpenAI(api_key=api_key))
 
 
+@observed("guiltless.ai.generate")
 def run_ai(instructions: str, user_input: str) -> str:
     try:
         response = get_client().responses.create(
@@ -112,6 +463,37 @@ def parse_json_response(text: str) -> Any:
         ) from exc
 
 
+def extract_label_image(image_data_url: str) -> dict[str, Any]:
+    if len(image_data_url) > 6_000_000:
+        raise ValueError("Image is too large. Use a label image under 4 MB.")
+    try:
+        response = get_client().responses.create(
+            model=os.getenv("OPENAI_VISION_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")),
+            input=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Extract this packaged-food label. Return JSON only with keys: product, confidence, warnings. "
+                            "product must contain name, brand, category, nutrition, ingredients. nutrition must contain "
+                            "calories, protein_g, fiber_g, sugar_g, sodium_mg as numbers. Use 0 for unreadable values."
+                        ),
+                    },
+                    {"type": "input_image", "image_url": image_data_url},
+                ],
+            }],
+        )
+        payload = parse_json_response(response.output_text)
+        if not isinstance(payload, dict):
+            raise ValueError("Vision response was not a JSON object.")
+        return payload
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Label image extraction failed: {exc}") from exc
+
+
 def safe_enrich_meal_plan(meal_plan: Any) -> Any:
     if not isinstance(meal_plan, dict):
         return meal_plan
@@ -129,17 +511,55 @@ def safe_enrich_meal_plan(meal_plan: Any) -> Any:
         return meal_plan
 
 
-@app.get("/")
+@observed("guiltless.meal_plan", "tool")
+def generate_meal_plan_data(prompt: dict[str, Any]) -> Any:
+    result = run_ai(
+        instructions=(
+            "Create a practical meal plan. Return JSON only with keys: summary, days, "
+            "and notes. Each day must contain meals; each meal must include name, ingredients, "
+            "estimated_calories, and estimated_protein_g. Respect allergies and dietary limits. "
+            "Use simple ingredient names that can be mapped to USDA foods where possible. "
+            "Estimates must be clearly identified as estimates."
+        ),
+        user_input=json.dumps(prompt),
+    )
+    return safe_enrich_meal_plan(parse_json_response(result))
+
+
+@observed("guiltless.shopping_list", "tool")
+def generate_shopping_list_data(meal_plan: Any, servings: int) -> Any:
+    result = run_ai(
+        instructions=(
+            "Convert the supplied meal plan into a consolidated grocery shopping list. "
+            "Return JSON only with keys: servings, categories, and notes. Group items by "
+            "produce, proteins, dairy_or_alternatives, pantry, frozen, and other. Merge duplicates "
+            "and provide practical estimated quantities."
+        ),
+        user_input=json.dumps({"meal_plan": meal_plan, "servings": servings}),
+    )
+    return parse_json_response(result)
+
+
+@app.get("/", response_model=RootResponse)
 def root() -> dict[str, str]:
     return {"status": "ok", "project": "Food Safety AI Agent"}
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 def health() -> dict[str, bool]:
     return {"healthy": True}
 
 
+@app.get("/ready")
+def readiness():
+    try:
+        return database_readiness()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database is unavailable") from None
+
+
 @app.post("/chat", response_model=ChatResponse)
+@observed("guiltless.chat")
 def chat(request: ChatRequest) -> ChatResponse:
     answer = run_ai(
         instructions=(
@@ -152,19 +572,127 @@ def chat(request: ChatRequest) -> ChatResponse:
     return ChatResponse(response=answer)
 
 
-@app.post("/copilot/chat")
+@app.post("/copilot/chat", response_model=CopilotChatResponse)
+@observed("guiltless.copilot.v1")
 def context_chat(request: ContextChatRequest) -> dict[str, Any]:
-    intent = detect_intent(request.message)
-    context_prompt = build_context_prompt(request.message, request.context)
-    answer = run_ai(
-        instructions=(
-            "You are Guiltless AI, a context-aware nutrition copilot inside a food scoring and shopping app. "
-            "Use the supplied product, user goal, bag, and preference context. Prefer actionable next steps such as explain, compare, swap, meal-plan, or add-to-bag. "
-            "Do not invent medical claims; keep recommendations practical and transparent."
-        ),
-        user_input=context_prompt,
+    user_id = request.user_id or request.context.get("user_id")
+    context = dict(request.context)
+    use_memory = bool(request.load_memory or context.get("load_memory"))
+    if use_memory:
+        user_id = str(user_id or DEMO_USER_ID)
+    router = CopilotRouter(
+        ai_runner=run_ai if os.getenv("OPENAI_API_KEY") else None,
+        meal_plan_tool=generate_meal_plan_data,
+        shopping_list_tool=generate_shopping_list_data,
     )
-    return {"intent": intent, "response": answer, "context_used": request.context}
+    result = CopilotGraph(router, load_user_memory).route(
+        request.message, context, user_id=str(user_id) if user_id else None, load_memory=use_memory,
+    )
+    if user_id:
+        # Store only current input context, never the recursively loaded history.
+        save_copilot_message(str(user_id), "user", request.message, None, context)
+        save_copilot_message(str(user_id), "assistant", str(result.get("response") or ""), str(result.get("intent") or "general_chat"), context)
+    return result
+
+
+_catalog_repository = SqlProductRepository(seed_demo=os.getenv("CATALOG_SEED_DEMO", "true").lower() == "true")
+_product_lookup = ProductLookup(_catalog_repository, MemoryCache())
+_product_retriever = CatalogCandidateRetriever(_catalog_repository)
+# StateGraph.compile() is ~15 ms and the graph is stateless between runs, so it is
+# built once instead of per request. The router here has no ai_runner, and the
+# planning tools resolve run_ai at call time, so nothing is captured too early.
+_guiltless_graph = GuiltlessGraph(
+    _product_lookup, _product_retriever,
+    CopilotRouter(meal_plan_tool=generate_meal_plan_data, shopping_list_tool=generate_shopping_list_data),
+    load_user_memory,
+)
+
+
+@app.get("/v2/products", response_model=list[CanonicalProduct])
+def canonical_products(limit: int = 100, offset: int = 0):
+    if not 1 <= limit <= 100 or offset < 0:
+        raise HTTPException(status_code=422, detail="limit must be 1–100 and offset must be nonnegative")
+    return _catalog_repository.list_products(limit=limit, offset=offset)
+
+
+@app.get("/v2/products/lookup", response_model=CanonicalProduct)
+def canonical_product_lookup(barcode: str | None = None, product_id: str | None = None):
+    try:
+        product = _product_lookup.find(barcode=barcode, product_id=product_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
+
+@app.post("/v2/copilot/chat", response_model=CopilotV2Response)
+@observed("guiltless.copilot.v2")
+def grounded_copilot(request: CopilotV2Request):
+    return _guiltless_graph.run(request.model_dump(exclude_none=True, exclude_unset=True))
+
+
+@app.post("/helper/chat")
+def app_helper_chat(request: "HelperRequest"):
+    try:
+        return helper_reply(request, _guiltless_graph)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/app/events/{user_id}")
+def app_event_create(user_id: str, request: AppEventRequest):
+    try:
+        return record_event(user_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/helper/proactive/{user_id}")
+def app_helper_proactive(user_id: str, context: ProactiveContext):
+    return proactive_suggestion(user_id, context)
+
+
+@app.get("/profile/{user_id}", response_model=ProfileResponse)
+def profile_get(user_id: str) -> dict[str, Any]:
+    return get_profile(user_id)
+
+
+@app.put("/profile/{user_id}", response_model=ProfileResponse)
+def profile_put(user_id: str, request: ProfileUpdateRequest) -> dict[str, Any]:
+    return update_profile(user_id, request.model_dump())
+
+
+@app.get("/bag/{user_id}", response_model=BagResponse)
+def persistent_bag_get(user_id: str) -> dict[str, Any]:
+    items = get_bag(user_id)
+    return {"user_id": user_id, "items": items, "count": len(items)}
+
+
+@app.post("/bag/{user_id}/add", response_model=BagAddResponse)
+def persistent_bag_add(user_id: str, request: BagAddRequest) -> dict[str, Any]:
+    item = add_bag_item(user_id, request.product, request.quantity)
+    return {"user_id": user_id, "added": item, "items": get_bag(user_id)}
+
+
+@app.delete("/bag/{user_id}/clear", response_model=BagClearResponse)
+def persistent_bag_clear(user_id: str) -> dict[str, Any]:
+    return {"user_id": user_id, "cleared": clear_bag(user_id), "items": []}
+
+
+@app.get("/plans/{user_id}", response_model=PlansResponse)
+def plans_get(user_id: str) -> dict[str, Any]:
+    return {"user_id": user_id, **get_user_plans(user_id)}
+
+
+@app.post("/plans/{user_id}/meal", response_model=PlanSaveResponse)
+def plans_save_meal(user_id: str, request: PlanSaveRequest) -> dict[str, Any]:
+    return save_user_plan(user_id, "meal", request.plan)
+
+
+@app.post("/plans/{user_id}/workout", response_model=PlanSaveResponse)
+def plans_save_workout(user_id: str, request: PlanSaveRequest) -> dict[str, Any]:
+    return save_user_plan(user_id, "workout", request.plan)
 
 
 @app.post("/meal-plan")
@@ -177,42 +705,118 @@ def create_meal_plan(request: MealPlanRequest) -> Any:
         "calorie_target": request.calorie_target,
         "meals_per_day": request.meals_per_day,
     }
-    result = run_ai(
-        instructions=(
-            "Create a practical meal plan. Return JSON only with keys: summary, days, "
-            "and notes. Each day must contain meals; each meal must include name, ingredients, "
-            "estimated_calories, and estimated_protein_g. Respect allergies and dietary limits. "
-            "Use simple ingredient names that can be mapped to USDA foods where possible. "
-            "Estimates must be clearly identified as estimates."
-        ),
-        user_input=json.dumps(prompt),
-    )
-    meal_plan = parse_json_response(result)
-    return safe_enrich_meal_plan(meal_plan)
+    return generate_meal_plan_data(prompt)
+
+
+@app.post("/workout-plan", response_model=WorkoutPlanResponse)
+def create_workout_plan(request: WorkoutPlanRequest) -> dict[str, Any]:
+    return build_workout_plan(request.model_dump())
+
+
+@app.post("/coach/client-plan", response_model=CoachClientPlanResponse)
+def create_coach_client_plan(request: CoachClientPlanRequest) -> dict[str, Any]:
+    request_data = request.model_dump()
+    plan = build_client_plan(request_data)
+    try:
+        plan["persistence"] = save_client_plan(request_data, plan)
+    except ClientNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return plan
+
+
+@app.get("/coach/clients", response_model=CoachClientListResponse)
+def coach_clients() -> dict[str, Any]:
+    clients = list_clients()
+    return {"clients": clients, "count": len(clients)}
+
+
+@app.post("/coach/clients", response_model=CoachClientModel)
+def coach_clients_create(request: CoachClientCreateRequest) -> dict[str, Any]:
+    return create_or_update_client(request.model_dump())
+
+
+@app.get("/coach/clients/{client_id}", response_model=CoachClientModel)
+def coach_client(client_id: str) -> dict[str, Any]:
+    client = get_client_profile(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client profile not found.")
+    return client
+
+
+@app.get("/coach/clients/{client_id}/plans", response_model=ClientPlanListResponse)
+def coach_client_plans(client_id: str) -> dict[str, Any]:
+    if get_client_profile(client_id) is None:
+        raise HTTPException(status_code=404, detail="Client profile not found.")
+    plans = get_client_plans(client_id)
+    return {"client_id": client_id, "plans": plans, "count": len(plans)}
+
+
+@app.post("/coach/clients/{client_id}/plans", response_model=ClientPlanRecordModel)
+def coach_client_plans_save(client_id: str, request: PlanSaveRequest) -> dict[str, Any]:
+    try:
+        return save_plan_for_client(client_id, request.plan)
+    except ClientNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/checkout/prepare", response_model=CheckoutPrepareResponse)
+def checkout_prepare(request: CheckoutPrepareRequest) -> dict[str, Any]:
+    try:
+        return prepare_checkout(request.model_dump())
+    except ClientNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/checkout/instacart", response_model=InstacartCheckoutResponse)
+def checkout_instacart(request: InstacartCheckoutRequest) -> dict[str, Any]:
+    try:
+        return prepare_instacart_checkout(request.model_dump())
+    except ClientNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/checkout/{checkout_id}", response_model=CheckoutSessionResponse)
+def checkout_session(checkout_id: str) -> dict[str, Any]:
+    checkout = get_checkout(checkout_id)
+    if checkout is None:
+        raise HTTPException(status_code=404, detail="Checkout session not found.")
+    return checkout
 
 
 @app.post("/shopping-list")
 def create_shopping_list(request: ShoppingListRequest) -> Any:
-    result = run_ai(
-        instructions=(
-            "Convert the supplied meal plan into a consolidated grocery shopping list. "
-            "Return JSON only with keys: servings, categories, and notes. Group items by "
-            "produce, proteins, dairy_or_alternatives, pantry, frozen, and other. Merge duplicates "
-            "and provide practical estimated quantities."
-        ),
-        user_input=json.dumps(
-            {"meal_plan": request.meal_plan, "servings": request.servings}
-        ),
-    )
-    return parse_json_response(result)
+    return generate_shopping_list_data(request.meal_plan, request.servings)
 
 
 @app.post("/product/explain")
+@observed("guiltless.product.explain", "tool")
 def product_explain(request: ProductExplainRequest) -> dict[str, Any]:
     return explain_product(request.product, request.goal)
 
 
+@app.post("/product/scan")
+@observed("guiltless.product.scan", "tool")
+def product_scan(request: LabelScanRequest) -> dict[str, Any]:
+    try:
+        result = scan_label(
+            label_text=request.label_text,
+            image_data_url=request.image_data_url,
+            product_name=request.product_name,
+            brand=request.brand,
+            image_extractor=extract_label_image if request.image_data_url and os.getenv("OPENAI_API_KEY") else None,
+        )
+        result["persistence"] = save_scan_history(request.user_id, result)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.post("/product/compare")
+@observed("guiltless.product.compare", "tool")
 def product_compare(request: ProductCompareRequest) -> dict[str, Any]:
     return compare_products(request.products, request.goal)
 
