@@ -14,6 +14,38 @@ type Proactive = {id: string; intent: string; message: string; reason: string;
   action: {id: string; label: string; kind: string; requires_confirmation: boolean}};
 const screens = [['product_detail', 'Product detail'], ['groceries', 'Groceries & filters'], ['comparison', 'Product comparison'], ['bag', 'Shopping bag'], ['scan', 'Scan a food'], ['food_logging', 'Log / save food'], ['tracker', 'My Tracker']];
 
+function offlineGuideReply(question: string, screen: string, productName: string, goal: string): Reply {
+  const label = screens.find(([id]) => id === screen)?.[1] ?? 'this screen';
+  const normalized = question.toLowerCase();
+  const scoreQuestion = normalized.includes('score');
+  const loggingQuestion = normalized.includes('log');
+  const comparisonQuestion = normalized.includes('compare') || normalized.includes('alternative');
+  const response = scoreQuestion
+    ? `A health score is a quick decision aid, not medical advice. It weighs nutrition signals and how well ${productName} fits your ${goal} goal.`
+    : loggingQuestion
+      ? 'Use the Tracker or Log / save food area to add what you ate. Your daily calories and remaining target update after you save an item.'
+      : comparisonQuestion
+        ? `Start with ${productName}, then choose Compare alternatives. Look at protein, sugar, fiber, and the score before deciding.`
+        : `You are on ${label}. Use the numbered Guiltless workflow to review a product, understand its score, compare options, and optimize your bag.`;
+  const steps = scoreQuestion
+    ? ['Open Product explainability.', 'Review positives, cautions, and the goal fit.', 'Compare an alternative before adding an item to your bag.']
+    : loggingQuestion
+      ? ['Open My Tracker.', 'Choose Log / save food.', 'Review the updated daily calories and remaining target.']
+      : comparisonQuestion
+        ? ['Choose a second product.', 'Compare nutrition signals side by side.', 'Use the recommendation as a starting point for your decision.']
+        : ['Choose a product from the catalog.', 'Open Explain to see why its score changed.', 'Compare alternatives or optimize your bag when you are ready.'];
+  return {
+    intent: 'offline_app_guide', response, steps, errors: [],
+    limitations: ['Live personalized data is temporarily unavailable. This is a local guide based on the current screen.'],
+    actions: [
+      {id: 'open_explain', label: 'Explain score', kind: 'navigate', requires_confirmation: false},
+      {id: 'open_compare', label: 'Compare alternatives', kind: 'navigate', requires_confirmation: false},
+      {id: 'open_bag', label: 'Open shopping bag', kind: 'navigate', requires_confirmation: false},
+    ],
+    tool_result: {},
+  };
+}
+
 export default function AppHelper({ apiUrl, productId, productName, bagIds, goal, screen, onNavigate }: {
   apiUrl?: string; productId?: string; productName: string; bagIds: string[]; goal: string; screen: string;
   onNavigate: (action: string) => void;
@@ -76,7 +108,10 @@ export default function AppHelper({ apiUrl, productId, productName, bagIds, goal
           score_source: externalScore ? 'mobile_app' : 'agent_catalog', user_id: 'demo-user'})});
       if (current === generation.current) setReply(result);
     } catch (e) {
-      if (current === generation.current && !controller.signal.aborted) setError(e instanceof Error ? e.message : 'The helper is unavailable. Try again.');
+      if (current === generation.current && !controller.signal.aborted) {
+        setReply(offlineGuideReply(question, activeScreen, productName, goal));
+        setNotice('Guiltless is showing an offline guide while the live assistant reconnects.');
+      }
     } finally { if (current === generation.current) setLoading(false); }
   }
 
